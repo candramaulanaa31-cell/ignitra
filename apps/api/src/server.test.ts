@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { resolveChainConfig } from "@ignitra/core";
 import { createLogger } from "@ignitra/core/server";
-import { createDb, type DbHandle } from "@ignitra/db";
+import { chainSyncStatus, createDb, type DbHandle } from "@ignitra/db";
 import { buildServer } from "./server";
 
 const chain = resolveChainConfig({ chainId: 4663 });
@@ -51,6 +51,38 @@ describe("GET /health", () => {
     const app = await buildServer({ db: hanging, chain, logger, version: "0.1.0", healthTimeoutMs: 50 });
     const res = await app.inject({ method: "GET", url: "/health" });
     expect(res.statusCode).toBe(503);
+    await app.close();
+  });
+});
+
+describe("GET /health — listener heartbeat", () => {
+  const status = (lastTickAt: Date) => ({
+    chainId: 4663,
+    owner: "node-a",
+    headBlock: 1000,
+    confirmedHead: 980,
+    confirmedCursor: 975,
+    pendingCursor: null,
+    watchCount: 2,
+    rpc: {},
+    lastError: null,
+    lastTickAt,
+  });
+
+  it("reports unknown before any listener ran, then ok, then stale", async () => {
+    const app = await buildServer({ db, chain, logger, version: "0.1.0", listenerStaleMs: 60_000 });
+    expect((await app.inject({ method: "GET", url: "/health" })).json().listener).toEqual({ status: "unknown" });
+
+    await db.db.insert(chainSyncStatus).values(status(new Date()));
+    const fresh = (await app.inject({ method: "GET", url: "/health" })).json();
+    expect(fresh.listener).toMatchObject({ status: "ok", head: 1000, confirmed_cursor: 975, lag_blocks: 5, watches: 2 });
+
+    await db.db.delete(chainSyncStatus);
+    await db.db.insert(chainSyncStatus).values(status(new Date(Date.now() - 120_000)));
+    const stale = await app.inject({ method: "GET", url: "/health" });
+    expect(stale.statusCode).toBe(200); // the API itself is fine
+    expect(stale.json().listener.status).toBe("stale");
+    await db.db.delete(chainSyncStatus);
     await app.close();
   });
 });

@@ -16,6 +16,8 @@
     "check": "pnpm typecheck && pnpm test",
     "db:generate": "pnpm --filter @ignitra/db generate",
     "db:migrate": "pnpm --filter @ignitra/db migrate",
-    "gen:secret": "node scripts/gen-secret.mjs"
+    "gen:secret": "node scripts/gen-secret.mjs",
+    "dev:listener": "pnpm --filter @ignitra/listener dev",
+    "listener:cli": "pnpm --filter @ignitra/listener cli"
   }
 }

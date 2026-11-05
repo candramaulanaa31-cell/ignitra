@@ -40,6 +40,17 @@ const optional = <T extends z.ZodType>(schema: T) => z.preprocess(blank, schema.
 const httpUrl = z.url({ protocol: /^https?$/ });
 const wsUrl = z.url({ protocol: /^wss?$/ });
 
+/** Building blocks for service-specific env schemas. */
+export const envVar = {
+  /** Optional variable; "" counts as unset. */
+  optional,
+  /** Variable with a default; "" counts as unset. */
+  withDefault: <T extends z.ZodType>(schema: T) => z.preprocess(blank, schema),
+  int: (min: number, max: number) => z.coerce.number().int().min(min).max(max),
+  httpUrl,
+  wsUrl,
+} as const;
+
 const base64Key32 = z
   .string()
   .regex(/^[A-Za-z0-9+/]+={0,2}$/, { message: "must be base64" })

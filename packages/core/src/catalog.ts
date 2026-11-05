@@ -63,3 +63,23 @@ export type StepStatus = (typeof STEP_STATUSES)[number];
 
 export const PLANS = ["free", "builder", "team"] as const;
 export type Plan = (typeof PLANS)[number];
+
+// ---- Chain ingestion (Phase 2) -------------------------------------------
+
+/** pending = seen at head (fast mode only); confirmed = canonical at confirmation depth; reverted = reorged out. */
+export const CHAIN_EVENT_STATUSES = ["pending", "confirmed", "reverted"] as const;
+export type ChainEventStatus = (typeof CHAIN_EVENT_STATUSES)[number];
+
+export const CURSOR_STREAMS = ["confirmed", "pending"] as const;
+export type CursorStream = (typeof CURSOR_STREAMS)[number];
+
+/** flow = derived from an active flow's trigger (Phase 3); manual = operator-added (CLI). */
+export const WATCH_SOURCES = ["flow", "manual"] as const;
+export type WatchSource = (typeof WATCH_SOURCES)[number];
+
+/** depth = head - N blocks; safe / finalized = the node's L1-backed block tags. */
+export const CONFIRMATION_STRATEGIES = ["depth", "safe", "finalized"] as const;
+export type ConfirmationStrategy = (typeof CONFIRMATION_STRATEGIES)[number];
+
+export const ABI_STATUSES = ["verified", "unverified", "error"] as const;
+export type AbiStatus = (typeof ABI_STATUSES)[number];

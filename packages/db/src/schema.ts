@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   boolean,
   check,
   foreignKey,
@@ -10,13 +11,18 @@ import {
   primaryKey,
   text,
   timestamp,
+  unique,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 import {
+  ABI_STATUSES,
+  CHAIN_EVENT_STATUSES,
+  CURSOR_STREAMS,
   FLOW_STATUSES,
   PLANS,
   RUN_STATUSES,
   STEP_STATUSES,
+  WATCH_SOURCES,
   type FlowDefinition,
 } from "@ignitra/core";
 import type { EncryptedEnvelope } from "@ignitra/core/server";
@@ -213,6 +219,158 @@ export const runSteps = pgTable(
   ],
 );
 
+// ===========================================================================
+// Chain ingestion (Phase 2)
+// ===========================================================================
+
+const HEX32 = "'^0x[0-9a-f]{64}$'";
+const ADDR = "'^0x[0-9a-f]{40}$'";
+
+// ---------------------------------------------------------------------------
+// leases — single-writer election for long-running loops (listener, later the
+// scheduler). Every write the holder makes re-checks the lease (fencing).
+// ---------------------------------------------------------------------------
+export const leases = pgTable("leases", {
+  name: text("name").primaryKey(),
+  owner: text("owner").notNull(),
+  expiresAt: ts("expires_at").notNull(),
+  acquiredAt: ts("acquired_at").notNull().defaultNow(),
+});
+
+// ---------------------------------------------------------------------------
+// watches — what the listener fetches logs for. Derived from active flows
+// (Phase 3) or added manually. topic0 NULL = every event of the address.
+// ---------------------------------------------------------------------------
+export const watches = pgTable(
+  "watches",
+  {
+    id: text("id").primaryKey(),
+    chainId: integer("chain_id").notNull(),
+    address: text("address").notNull(),
+    topic0: text("topic0"),
+    /** Also ingest at chain head (pending) for fast-mode flows. */
+    fast: boolean("fast").notNull().default(false),
+    source: text("source", { enum: WATCH_SOURCES }).notNull(),
+    flowId: text("flow_id").references(() => flows.id, { onDelete: "cascade" }),
+    note: text("note"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    unique("watches_identity_key").on(t.chainId, t.address, t.topic0, t.flowId).nullsNotDistinct(),
+    index("watches_chain_idx").on(t.chainId),
+    check("watches_address_canonical", sql.raw(`address ~ ${ADDR}`)),
+    check("watches_topic0_format", sql.raw(`topic0 is null or topic0 ~ ${HEX32}`)),
+    check("watches_source_valid", inList("source", WATCH_SOURCES)),
+    check("watches_flow_iff_source_flow", sql`(source = 'flow') = (flow_id is not null)`),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// chain_cursors — resumable sync checkpoints, one per stream.
+// `block_number` is the last block FULLY processed (inclusive).
+// ---------------------------------------------------------------------------
+export const chainCursors = pgTable(
+  "chain_cursors",
+  {
+    chainId: integer("chain_id").notNull(),
+    stream: text("stream", { enum: CURSOR_STREAMS }).notNull(),
+    blockNumber: bigint("block_number", { mode: "number" }).notNull(),
+    /** Hash of `block_number` when known — used to detect reorgs below the cursor. */
+    blockHash: text("block_hash"),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ name: "chain_cursors_pkey", columns: [t.chainId, t.stream] }),
+    check("chain_cursors_stream_valid", inList("stream", CURSOR_STREAMS)),
+    check("chain_cursors_block_nonneg", sql`block_number >= 0`),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// chain_events — normalized logs for watched contracts. Raw topics/data are
+// always kept so events can be re-decoded once an ABI becomes available.
+// Identity is (chain, block_hash, log_index): a tx re-included after a reorg
+// lands in a different block and is a different row.
+// ---------------------------------------------------------------------------
+export const chainEvents = pgTable(
+  "chain_events",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    chainId: integer("chain_id").notNull(),
+    blockNumber: bigint("block_number", { mode: "number" }).notNull(),
+    blockHash: text("block_hash").notNull(),
+    blockTimestamp: ts("block_timestamp"),
+    txHash: text("tx_hash").notNull(),
+    txIndex: integer("tx_index").notNull(),
+    logIndex: integer("log_index").notNull(),
+    address: text("address").notNull(),
+    topic0: text("topic0"),
+    topics: jsonb("topics").$type<string[]>().notNull(),
+    data: text("data").notNull(),
+    eventName: text("event_name"),
+    eventSignature: text("event_signature"),
+    args: jsonb("args").$type<Record<string, unknown>>(),
+    abiSource: text("abi_source"),
+    status: text("status", { enum: CHAIN_EVENT_STATUSES }).notNull(),
+    firstSeenAt: ts("first_seen_at").notNull().defaultNow(),
+    confirmedAt: ts("confirmed_at"),
+    revertedAt: ts("reverted_at"),
+    revertReason: text("revert_reason"),
+  },
+  (t) => [
+    unique("chain_events_identity_key").on(t.chainId, t.blockHash, t.logIndex),
+    index("chain_events_status_block_idx").on(t.chainId, t.status, t.blockNumber),
+    index("chain_events_address_block_idx").on(t.chainId, t.address, t.blockNumber),
+    index("chain_events_tx_idx").on(t.txHash),
+    check("chain_events_status_valid", inList("status", CHAIN_EVENT_STATUSES)),
+    check("chain_events_confirmed_has_ts", sql`status <> 'confirmed' or confirmed_at is not null`),
+    check("chain_events_reverted_has_ts", sql`status <> 'reverted' or reverted_at is not null`),
+    check("chain_events_address_canonical", sql.raw(`address ~ ${ADDR}`)),
+    check("chain_events_hashes_canonical", sql.raw(`block_hash ~ ${HEX32} and tx_hash ~ ${HEX32}`)),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// chain_sync_status — listener heartbeat, read by /health endpoints.
+// ---------------------------------------------------------------------------
+export const chainSyncStatus = pgTable("chain_sync_status", {
+  chainId: integer("chain_id").primaryKey(),
+  owner: text("owner").notNull(),
+  headBlock: bigint("head_block", { mode: "number" }).notNull(),
+  confirmedHead: bigint("confirmed_head", { mode: "number" }).notNull(),
+  confirmedCursor: bigint("confirmed_cursor", { mode: "number" }).notNull(),
+  pendingCursor: bigint("pending_cursor", { mode: "number" }),
+  watchCount: integer("watch_count").notNull(),
+  rpc: jsonb("rpc").$type<Record<string, unknown>>().notNull(),
+  lastError: text("last_error"),
+  lastDeepReorgAt: ts("last_deep_reorg_at"),
+  lastTickAt: ts("last_tick_at").notNull(),
+});
+
+// ---------------------------------------------------------------------------
+// contract_abis — explorer ABI cache (incl. negative results) per address.
+// For EIP-1967 proxies the implementation ABI is merged in.
+// ---------------------------------------------------------------------------
+export const contractAbis = pgTable(
+  "contract_abis",
+  {
+    chainId: integer("chain_id").notNull(),
+    address: text("address").notNull(),
+    status: text("status", { enum: ABI_STATUSES }).notNull(),
+    abi: jsonb("abi").$type<unknown[]>(),
+    implementation: text("implementation"),
+    source: text("source").notNull(),
+    error: text("error"),
+    fetchedAt: ts("fetched_at").notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ name: "contract_abis_pkey", columns: [t.chainId, t.address] }),
+    check("contract_abis_status_valid", inList("status", ABI_STATUSES)),
+    check("contract_abis_verified_has_abi", sql`status <> 'verified' or abi is not null`),
+    check("contract_abis_address_canonical", sql.raw(`address ~ ${ADDR}`)),
+  ],
+);
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type Flow = typeof flows.$inferSelect;
@@ -225,3 +383,10 @@ export type Run = typeof runs.$inferSelect;
 export type NewRun = typeof runs.$inferInsert;
 export type RunStep = typeof runSteps.$inferSelect;
 export type NewRunStep = typeof runSteps.$inferInsert;
+export type Watch = typeof watches.$inferSelect;
+export type NewWatch = typeof watches.$inferInsert;
+export type ChainCursor = typeof chainCursors.$inferSelect;
+export type ChainEvent = typeof chainEvents.$inferSelect;
+export type NewChainEvent = typeof chainEvents.$inferInsert;
+export type ChainSyncStatus = typeof chainSyncStatus.$inferSelect;
+export type ContractAbi = typeof contractAbis.$inferSelect;

@@ -10,6 +10,7 @@ export const ID_PREFIXES = {
   connection: "conn",
   run: "run",
   apiKey: "key",
+  watch: "wat",
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;

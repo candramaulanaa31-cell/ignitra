@@ -8,9 +8,8 @@ listener ──▶ trigger + condition engine ──▶ runs (queued) ──▶ 
  (chain)        (match, enrich, evaluate)     (unique key)     (retry)     (Discord, webhook, push…)
 ```
 
-> **Status: Phase 1 — Foundation.** Skeleton, config, data model, encryption, empty
-> module registries. No triggers or actions are implemented yet (by design — see the
-> 9-phase plan).
+> **Status: Phase 2 — Chain listener.** Reorg-safe, resumable ingestion of decoded
+> events for watched contracts. Triggers (matching events to flows) arrive in Phase 3.
 
 ## Layout
 
@@ -18,9 +17,10 @@ listener ──▶ trigger + condition engine ──▶ runs (queued) ──▶ 
 |---|---|
 | `apps/api` | Fastify HTTP API. Phase 1: `GET /health`, JSON errors. |
 | `apps/web` | Next.js app (landing + `/app` placeholder). |
-| `apps/listener` | Chain listener process. Phase 1: boots, validates config, connects DB. |
+| `apps/listener` | Chain listener: polling/WS head tracking, log ingestion, confirmations, reorg handling, health endpoint, operator CLI. |
 | `apps/runner` | Flow runner process. Phase 1: boots, connects DB. |
 | `packages/core` | Domain core. `@ignitra/core` is isomorphic; `@ignitra/core/server` is Node-only. |
+| `packages/chain` | RPC reader with failover, built-in ABIs, event decoder, explorer ABI registry. Test doubles under `@ignitra/chain/testing`. |
 | `packages/db` | Drizzle schema, SQL migrations, driver-agnostic client (Postgres or PGlite). |
 | `packages/sdk` | `@ignitra/sdk` skeleton (Phase 8). |
 
@@ -82,6 +82,44 @@ To run listener + runner + api together (`pnpm dev`), use a real Postgres URL.
 - Deletes cascade from user to flows, versions, runs and steps, and from user to connections.
 - `connections.secret_enc` holds an envelope bound to `connection:<id>` and is never returned to clients.
 
+## Chain listener
+
+```
+head (poll / WS wake) ──▶ tick ──▶ deep-reorg check ──▶ confirmed pass ──▶ pending pass (fast watches)
+                                     cursor hash still      re-query (cursor, head-N]   (head-N, head]
+                                     canonical?             reconcile → confirmed /     → pending
+                                                            reverted
+```
+
+- **Watches** say what to ingest: `(address, topic0 | all)`. They come from active flows (Phase 3) or the CLI.
+- **Confirmation is decided by re-querying at depth**, not by trusting what was seen at head. Any reorg shallower than the confirmation depth is absorbed: rows that vanished are marked `reverted` (`reorg`), and their replacements are inserted as `confirmed`.
+- **Deep reorgs** are caught by checking that the confirmed cursor's block hash is still canonical. When it is not, the last `REORG_REWIND_BLOCKS` blocks are re-verified, and affected rows become `reverted` (`deep_reorg`).
+- **Exactly-once ingestion:** events are unique on `(chain, block_hash, log_index)`. Each range commits atomically together with its cursor and a lease check, so a crash or a lost lease can never skip or double-count a block.
+- **One active listener per chain**, through a lease in Postgres. Standby instances take over when the lease expires.
+- **Node limits:** `getLogs` ranges shrink when the node refuses them (too many logs or blocks), stay under any cap the node states, and grow back after successes.
+- **Decoding:** a contract's verified ABI (Blockscout, plus the EIP-1967 implementation for proxies) is tried first, then the built-ins: ERC-20, ERC-721, Ownable, AccessControl, Pausable, ERC-1967 and Safe v1.3/v1.4. Raw topics and data are always kept.
+
+Measured on mainnet (2026-11-05):
+
+| Measurement | Value | Consequence |
+|---|---|---|
+| Block rate | ~10 blocks/s | `depth 20` ≈ 2 s |
+| `safe` tag | ~12 min behind head | Optional `CONFIRMATION_STRATEGY=safe` |
+| `finalized` tag | ~18 min behind head | Optional `CONFIRMATION_STRATEGY=finalized` |
+| `eth_getLogs` limits | 10k logs and 30k blocks per call | Adaptive range |
+| Public WebSocket | None | Polling by default |
+| Rate limiting | Public RPC returns HTTP 429 under load | Set `RPC_URL_FALLBACK` |
+
+```bash
+pnpm listener:cli watch add <token> "Transfer(address,address,uint256)" [--fast]
+pnpm listener:cli watch add <contract>          # every event of the address
+pnpm listener:cli watch list | watch rm <id> | status | events | stats
+pnpm dev:listener                               # health: http://127.0.0.1:4001/health
+```
+
+ABI fetching needs a free Blockscout key (`EXPLORER_API_KEY`, from dev.blockscout.com). Without one,
+the built-in ABIs still decode the common standards.
+
 ## Scripts
 
 | Command | |
@@ -91,6 +129,8 @@ To run listener + runner + api together (`pnpm dev`), use a real Postgres URL.
 | `pnpm test` | Vitest (core, db, api) |
 | `pnpm build` | production build of the web app |
 | `pnpm dev` | all apps in parallel (needs real Postgres) |
+| `pnpm dev:listener` | chain listener |
+| `pnpm listener:cli …` | manage watches, inspect events and sync status |
 
 ## Notes
 
@@ -101,7 +141,7 @@ To run listener + runner + api together (`pnpm dev`), use a real Postgres URL.
 ## Roadmap
 
 1. **Foundation** ✅
-2. Chain listener: blocks, logs, ABI registry, decoding, checkpoints, confirmations, reorgs
+2. **Chain listener** ✅ blocks, logs, ABI registry, decoding, checkpoints, confirmations, reorgs
 3. Trigger and condition engine
 4. Flow runner + WEBHOOK / DISCORD / WEB_PUSH
 5. SIWE, connections, schedule, chain read, plan limits
