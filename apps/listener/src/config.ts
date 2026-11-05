@@ -26,6 +26,21 @@ export const listenerEnvSchema = workerEnvSchema.extend({
   /** Blockscout PRO API base (chain-scoped). ABI fetching is off without a key. */
   EXPLORER_API_URL: envVar.optional(envVar.httpUrl),
   EXPLORER_API_KEY: envVar.optional(z.string().min(8)),
+  /** What this process runs: chain ingestion (sync), event → run matching (matcher), or both. */
+  LISTENER_ROLES: envVar.withDefault(
+    z
+      .string()
+      .default("sync,matcher")
+      .transform((v) => v.split(",").map((s) => s.trim()).filter(Boolean))
+      .pipe(z.array(z.enum(["sync", "matcher"])).min(1)),
+  ),
+  MATCHER_BATCH_SIZE: envVar.withDefault(envVar.int(1, 5000).default(500)),
+  /** Sampling interval of BALANCE_THRESHOLD / CONTRACT_DEPLOYED flows. */
+  MATCHER_POLL_TRIGGERS_MS: envVar.withDefault(envVar.int(1000, 3_600_000).default(15_000)),
+  /** Evaluation rows stored per flow per minute (counters are always exact). */
+  MATCHER_EVALUATIONS_PER_MINUTE: envVar.withDefault(envVar.int(0, 10_000).default(20)),
+  /** Auto-pause a flow when events dropped by its hourly cap reach factor × cap. */
+  MATCHER_RUNAWAY_FACTOR: envVar.withDefault(envVar.int(1, 1000).default(3)),
 });
 
 export type ListenerEnv = z.output<typeof listenerEnvSchema>;

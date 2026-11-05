@@ -1,6 +1,6 @@
 import type { Logger } from "pino";
 import type { ConfirmationStrategy, NormalizedHash } from "@ignitra/core";
-import { LogRangeTooLargeError, type AbiRegistry, type ChainReader, type EventDecoder, type RawLog } from "@ignitra/chain";
+import { LogRangeTooLargeError, type AbiRegistry, type BlockHeader, type ChainReader, type EventDecoder, type RawLog } from "@ignitra/chain";
 import type { NewChainEvent } from "@ignitra/db";
 import { WatchFilter } from "./filter";
 import type { ActiveWatch, Cursor, ListenerStore } from "./store";
@@ -52,6 +52,19 @@ export class LogTooDenseError extends Error {
 }
 
 const identity = (l: Pick<RawLog, "blockHash" | "logIndex">): string => `${l.blockHash}:${l.logIndex}`;
+
+/**
+ * Block timestamps. Robinhood Chain's public RPC returns `blockTimestamp: "0x0"`
+ * in logs (field present, never filled), and fetching one header per block
+ * would cost ~10 requests/s at this chain's block rate — far beyond the public
+ * RPC's per-call rate limit. So timestamps are EXACT at anchor blocks (range
+ * ends — fetched anyway for the cursor hash — plus one every ANCHOR_EVERY
+ * blocks) and interpolated in between. Block time is monotonic and ranges are
+ * ~20 blocks per tick, so the error stays under a second. Nodes that do fill
+ * `blockTimestamp` are used as-is (exact).
+ */
+const ANCHOR_EVERY = 64;
+const ANCHOR_CACHE = 1024;
 /** Consecutive successful fetches before the range doubles again (density is usually local). */
 const GROW_AFTER = 5;
 
@@ -67,7 +80,7 @@ export class ChainSync {
   #nodeCap = Number.POSITIVE_INFINITY;
   #rangeSuccesses = 0;
   #knownAbiAddresses = new Set<string>();
-  readonly #timestampCache = new Map<string, number>();
+  readonly #anchors = new Map<number, BlockHeader>();
 
   constructor(deps: {
     reader: ChainReader;
@@ -119,6 +132,7 @@ export class ChainSync {
     let deepReorg: TickReport["deepReorg"];
     if (cursor.blockHash) {
       const header = await this.#reader.blockByNumber(cursor.blockNumber);
+      if (header) this.#remember(header);
       if (!header || header.hash !== cursor.blockHash) {
         const rewoundTo = Math.max(0, cursor.blockNumber - this.#opts.rewindBlocks);
         this.#log.error(
@@ -148,9 +162,9 @@ export class ChainSync {
       const to = Math.min(head, from + this.#range - 1);
       if (to >= from) {
         const logs = await this.#fetch(from, to, fast);
-        await this.#fillTimestamps(logs);
+        const times = await this.#timestamps(logs, from, to);
         const inserted = await this.#store.commitPending({
-          rows: logs.map((l) => this.#row(l)),
+          rows: logs.map((l) => this.#row(l, times)),
           cursor: { blockNumber: to, blockHash: null },
         });
         pending = { from, to, inserted };
@@ -175,6 +189,7 @@ export class ChainSync {
     const live = await this.#store.liveEvents(from, to);
     let logs: RawLog[] = [];
     let toHash: NormalizedHash | null = null;
+    let times = new Map<number, number>();
 
     if (filter.size > 0 || live.keys.length > 0) {
       const requery = filter.union(WatchFilter.from(live.keys));
@@ -182,13 +197,15 @@ export class ChainSync {
       // Keep what is watched now, plus anything we already stored (so removing
       // a watch never turns its pending rows into false reverts).
       logs = fetched.filter((l) => filter.matches(l) || live.identities.has(identity(l)));
-      await this.#fillTimestamps(logs);
-      // Hash of `to` anchors the next deep-reorg check. Only needed while something is watched.
-      toHash = logs.findLast((l) => l.blockNumber === to)?.blockHash ?? (await this.#reader.blockByNumber(to))?.hash ?? null;
+      // Hash of `to` anchors the next deep-reorg check — always fetched fresh (never from cache).
+      const toHeader = await this.#reader.blockByNumber(to);
+      if (toHeader) this.#remember(toHeader);
+      toHash = toHeader?.hash ?? logs.findLast((l) => l.blockNumber === to)?.blockHash ?? null;
+      times = await this.#timestamps(logs, from, to);
     }
 
     const cursor: Cursor = { blockNumber: to, blockHash: toHash };
-    const result = await this.#store.commitConfirmed({ from, to, rows: logs.map((l) => this.#row(l)), cursor });
+    const result = await this.#store.commitConfirmed({ from, to, rows: logs.map((l) => this.#row(l, times)), cursor });
     if (result.reverted > 0) this.#log.warn({ from, to, ...result }, "reorg: events reverted");
     return { ...result, cursor };
   }
@@ -237,21 +254,61 @@ export class ChainSync {
     }
   }
 
-  /** Nitro includes blockTimestamp in logs; other nodes need one header per block. */
-  async #fillTimestamps(logs: RawLog[]): Promise<void> {
-    const missing = [...new Set(logs.filter((l) => l.blockTimestamp === null && !this.#timestampCache.has(l.blockHash)).map((l) => l.blockHash))];
-    for (const hash of missing) {
-      const header = await this.#reader.blockByHash(hash);
-      if (header) this.#timestampCache.set(hash, header.timestamp);
+  #remember(header: BlockHeader): void {
+    this.#anchors.set(header.number, header);
+    if (this.#anchors.size > ANCHOR_CACHE) {
+      const oldest = this.#anchors.keys().next().value;
+      if (oldest !== undefined) this.#anchors.delete(oldest);
     }
-    if (this.#timestampCache.size > 10_000) this.#timestampCache.clear();
   }
 
-  #row(log: RawLog): NewChainEvent {
+  async #anchor(n: number): Promise<BlockHeader | null> {
+    const hit = this.#anchors.get(n);
+    if (hit) return hit;
+    const header = await this.#reader.blockByNumber(n);
+    if (header) this.#remember(header);
+    return header;
+  }
+
+  /** Timestamps (unix s) for blocks whose logs lack one: exact at anchors, interpolated between. */
+  async #timestamps(logs: readonly RawLog[], from: number, to: number): Promise<Map<number, number>> {
+    const missing = [...new Set(logs.filter((l) => l.blockTimestamp === null).map((l) => l.blockNumber))].sort((a, b) => a - b);
+    const out = new Map<number, number>();
+    if (missing.length === 0) return out;
+    const lo = missing[0] ?? from;
+    const hi = missing[missing.length - 1] ?? to;
+    const points = new Set<number>([Math.max(0, from - 1), to]);
+    for (let n = Math.ceil(lo / ANCHOR_EVERY) * ANCHOR_EVERY; n < hi; n += ANCHOR_EVERY) points.add(n);
+    const anchors: BlockHeader[] = [];
+    for (const n of [...points].sort((a, b) => a - b)) {
+      const header = await this.#anchor(n);
+      if (header) anchors.push(header);
+    }
+    for (const b of missing) {
+      let before: BlockHeader | undefined;
+      let after: BlockHeader | undefined;
+      for (const a of anchors) {
+        if (a.number <= b) before = a;
+        if (a.number >= b) {
+          after = a;
+          break;
+        }
+      }
+      if (before && after) {
+        const span = after.number - before.number;
+        out.set(b, span === 0 ? before.timestamp : before.timestamp + Math.floor(((after.timestamp - before.timestamp) * (b - before.number)) / span));
+      } else if (before ?? after) {
+        out.set(b, (before ?? after)?.timestamp ?? 0);
+      }
+    }
+    return out;
+  }
+
+  #row(log: RawLog, times: ReadonlyMap<number, number>): NewChainEvent {
     const abi = this.#abis?.cached(log.address) ?? null;
     const decoded = this.#decoder.decode(log, abi);
     if (decoded?.name === "Upgraded" && this.#abis) this.#abis.invalidate(log.address);
-    const ts = log.blockTimestamp ?? this.#timestampCache.get(log.blockHash) ?? null;
+    const ts = log.blockTimestamp ?? times.get(log.blockNumber) ?? null;
     return {
       chainId: this.#store.chainId,
       blockNumber: log.blockNumber,

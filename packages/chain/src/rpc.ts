@@ -1,11 +1,16 @@
 import { normalizeAddress, normalizeHash, redactUrl, type NormalizedAddress, type NormalizedHash } from "@ignitra/core";
 import {
+  CallRevertedError,
   LogRangeTooLargeError,
+  RpcQueryError,
+  StateUnavailableError,
   type BlockHeader,
   type BlockTag,
+  type CallRequest,
   type ChainReader,
   type LogQuery,
   type RawLog,
+  type TxSummary,
 } from "./types";
 
 /**
@@ -51,6 +56,22 @@ const RANGE_RE =
   /exceeds limit|too many (logs|results)|query returned more than|response size|block range|spans? \d+ blocks|range (is )?too (large|wide|big)|narrow the block range|max(imum)? (block )?range|limit exceeded/i;
 const MAX_BLOCKS_RES = [/only (\d+) (?:blocks )?are allowed/i, /max(?:imum)? (?:block )?range(?: is| of)? (\d+)/i, /(\d+) block range/i];
 
+const STATE_RE = /historical state .* not available|missing trie node|state (is )?not available|state.*pruned|header not found for state/i;
+const REVERT_RE = /execution reverted|revert|invalid opcode|out of gas|stack (underflow|overflow)|invalid jump/i;
+
+/** Maps a JSON-RPC error to a query-level error when it is one (node healthy), else null. */
+export function asQueryError(method: string, code: number | null, message: string, data: unknown): RpcQueryError | null {
+  if (method === "eth_getLogs") {
+    const range = asRangeTooLarge(message);
+    if (range) return range;
+  }
+  if (STATE_RE.test(message)) return new StateUnavailableError(`${method}: ${message}`);
+  if (method === "eth_call" && (code === 3 || REVERT_RE.test(message))) {
+    return new CallRevertedError(`eth_call: ${message}`, typeof data === "string" && /^0x[0-9a-fA-F]*$/.test(data) ? (data.toLowerCase() as `0x${string}`) : null);
+  }
+  return null;
+}
+
 /** True when a node refused a log query because of its size (not because it is unhealthy). */
 export function asRangeTooLarge(message: string): LogRangeTooLargeError | null {
   if (RATE_LIMIT_RE.test(message) || !RANGE_RE.test(message)) return null;
@@ -91,7 +112,7 @@ export class HttpJsonRpcEndpoint implements RpcEndpoint {
       throw new RpcError(this.name, `${method}: ${reason}`);
     }
     const text = await res.text();
-    let body: { result?: unknown; error?: { code?: number; message?: string } };
+    let body: { result?: unknown; error?: { code?: number; message?: string; data?: unknown } };
     try {
       body = JSON.parse(text) as typeof body;
     } catch {
@@ -99,8 +120,8 @@ export class HttpJsonRpcEndpoint implements RpcEndpoint {
     }
     if (body.error) {
       const message = String(body.error.message ?? "unknown RPC error");
-      const range = method === "eth_getLogs" ? asRangeTooLarge(message) : null;
-      if (range) throw range;
+      const queryError = asQueryError(method, body.error.code ?? null, message, body.error.data);
+      if (queryError) throw queryError;
       throw new RpcError(this.name, `${method}: ${message}`, { code: body.error.code ?? null, httpStatus: res.status });
     }
     if (!res.ok) throw new RpcError(this.name, `${method}: HTTP ${res.status}`, { httpStatus: res.status });
@@ -185,11 +206,14 @@ export class RpcPool {
         s.cooldownUntil = 0;
         return result as T;
       } catch (err) {
-        if (err instanceof LogRangeTooLargeError) {
-          // The node is healthy; the query is too big. Do not fail over.
+        if (err instanceof RpcQueryError) {
+          // The node answered; the query itself failed. No cooldown. Only try
+          // another endpoint when it could answer differently (pruned state).
           s.consecutiveFailures = 0;
           s.lastOkAt = this.#now();
-          throw err;
+          if (!err.retryElsewhere) throw err;
+          lastError = err;
+          continue;
         }
         s.failures++;
         s.consecutiveFailures++;
@@ -266,6 +290,13 @@ export function parseQuantity(value: unknown, field: string): number {
 
 const toQuantity = (n: number): `0x${string}` => `0x${n.toString(16)}`;
 
+const toBlockTag = (blockNumber: number | undefined): string => (blockNumber === undefined ? "latest" : toQuantity(blockNumber));
+
+function parseHex(value: unknown, field: string): `0x${string}` {
+  if (typeof value !== "string" || !/^0x[0-9a-fA-F]*$/.test(value)) throw new RpcResponseError(`invalid hex for ${field}`);
+  return value.toLowerCase() as `0x${string}`;
+}
+
 function parseBlock(value: unknown): BlockHeader | null {
   if (value === null) return null;
   if (typeof value !== "object") throw new RpcResponseError("invalid block");
@@ -291,7 +322,8 @@ export function parseLog(value: unknown): RawLog | null {
     data: data.toLowerCase() as `0x${string}`,
     blockNumber: parseQuantity(l.blockNumber, "log.blockNumber"),
     blockHash: normalizeHash(String(l.blockHash)),
-    blockTimestamp: l.blockTimestamp === undefined || l.blockTimestamp === null ? null : parseQuantity(l.blockTimestamp, "log.blockTimestamp"),
+    // Robinhood Chain's RPC sends "0x0" (field present, never filled): treat 0 as unknown.
+    blockTimestamp: l.blockTimestamp === undefined || l.blockTimestamp === null ? null : parseQuantity(l.blockTimestamp, "log.blockTimestamp") || null,
     txHash: normalizeHash(String(l.transactionHash)),
     txIndex: parseQuantity(l.transactionIndex, "log.transactionIndex"),
     logIndex: parseQuantity(l.logIndex, "log.logIndex"),
@@ -345,9 +377,39 @@ export class RpcChainReader implements ChainReader {
   }
 
   async getStorageAt(address: NormalizedAddress, slot: `0x${string}`): Promise<`0x${string}`> {
-    const value = await this.pool.request<unknown>("eth_getStorageAt", [address, slot, "latest"]);
-    if (typeof value !== "string" || !/^0x[0-9a-fA-F]*$/.test(value)) throw new RpcResponseError("invalid storage value");
-    return value.toLowerCase() as `0x${string}`;
+    return parseHex(await this.pool.request<unknown>("eth_getStorageAt", [address, slot, "latest"]), "storage");
+  }
+
+  async call(request: CallRequest): Promise<`0x${string}`> {
+    return parseHex(await this.pool.request<unknown>("eth_call", [{ to: request.to, data: request.data }, toBlockTag(request.blockNumber)]), "eth_call");
+  }
+
+  async getBalance(address: NormalizedAddress, blockNumber?: number): Promise<bigint> {
+    return BigInt(parseHex(await this.pool.request<unknown>("eth_getBalance", [address, toBlockTag(blockNumber)]), "balance"));
+  }
+
+  async getTransactionCount(address: NormalizedAddress, blockNumber?: number): Promise<number> {
+    return parseQuantity(await this.pool.request<unknown>("eth_getTransactionCount", [address, toBlockTag(blockNumber)]), "nonce");
+  }
+
+  async getCode(address: NormalizedAddress, blockNumber?: number): Promise<`0x${string}`> {
+    return parseHex(await this.pool.request<unknown>("eth_getCode", [address, toBlockTag(blockNumber)]), "code");
+  }
+
+  async blockTransactions(number: number): Promise<TxSummary[] | null> {
+    const block = await this.pool.request<unknown>("eth_getBlockByNumber", [toQuantity(number), true]);
+    if (block === null) return null;
+    const txs = (block as { transactions?: unknown }).transactions;
+    if (!Array.isArray(txs)) throw new RpcResponseError("invalid block.transactions");
+    return txs.map((raw) => {
+      const tx = raw as Record<string, unknown>;
+      return {
+        hash: normalizeHash(String(tx.hash)),
+        from: normalizeAddress(String(tx.from)),
+        to: tx.to === null || tx.to === undefined ? null : normalizeAddress(String(tx.to)),
+        nonce: parseQuantity(tx.nonce, "tx.nonce"),
+      };
+    });
   }
 }
 

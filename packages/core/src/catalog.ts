@@ -83,3 +83,15 @@ export type ConfirmationStrategy = (typeof CONFIRMATION_STRATEGIES)[number];
 
 export const ABI_STATUSES = ["verified", "unverified", "error"] as const;
 export type AbiStatus = (typeof ABI_STATUSES)[number];
+
+// ---- Matching (Phase 3) ----------------------------------------------------
+
+/**
+ * Why a matched event did NOT become a run. Recorded (sampled) in
+ * flow_evaluations so users can answer "why didn't my flow run?".
+ *   conditions_failed — conditions evaluated false (per-condition results kept)
+ *   rate_limited      — over settings.max_runs_per_hour
+ *   undetermined      — the trigger could not be decided (e.g. pruned historical state)
+ */
+export const EVALUATION_OUTCOMES = ["conditions_failed", "rate_limited", "undetermined"] as const;
+export type EvaluationOutcome = (typeof EVALUATION_OUTCOMES)[number];

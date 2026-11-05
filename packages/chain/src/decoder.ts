@@ -70,7 +70,7 @@ function normalizeTuple(params: readonly AbiParameter[], value: unknown): Record
   return out;
 }
 
-function tryDecode(candidate: Candidate, log: RawLog): DecodedEvent | null {
+function tryDecode(candidate: Candidate, log: Pick<RawLog, "topics" | "data">): DecodedEvent | null {
   const [first, ...rest] = log.topics;
   if (!first) return null;
   try {
@@ -89,6 +89,14 @@ function tryDecode(candidate: Candidate, log: RawLog): DecodedEvent | null {
   } catch {
     return null;
   }
+}
+
+/** Strict decode against one specific event fragment (flows pin their fragment; no ABI guessing). */
+export function decodeWithEvent(event: AbiEvent, log: Pick<RawLog, "topics" | "data">, source = "flow"): DecodedEvent | null {
+  if (event.anonymous) return null;
+  const selector = toEventSelector(event).toLowerCase();
+  if (log.topics[0] !== selector) return null;
+  return tryDecode({ item: event, source }, log);
 }
 
 export class EventDecoder {

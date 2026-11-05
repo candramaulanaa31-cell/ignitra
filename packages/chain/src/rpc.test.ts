@@ -156,6 +156,8 @@ describe("parsing", () => {
       logIndex: 2,
     });
     expect(parseLog({ ...log, blockTimestamp: undefined })?.blockTimestamp).toBeNull();
+    // Robinhood Chain's public RPC: field present, value 0x0 — means "not provided", not 1970.
+    expect(parseLog({ ...log, blockTimestamp: "0x0" })?.blockTimestamp).toBeNull();
     expect(parseLog({ ...log, removed: true })).toBeNull();
     expect(() => parseLog({ ...log, data: "0xabc" })).toThrow();
   });

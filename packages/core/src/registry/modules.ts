@@ -22,11 +22,23 @@ export interface TriggerDefinition<TParams = unknown> {
   // Phase 3 adds: event filter derivation, matcher, enrichment.
 }
 
+/** Why a condition could not be evaluated as written (shown in run traces). */
+export type ConditionError = "missing_field" | "type_mismatch";
+
+export interface OperatorOutcome {
+  readonly passed: boolean;
+  readonly error?: ConditionError;
+}
+
 export interface ConditionOperatorDefinition {
   readonly type: ConditionOperator;
   readonly label: string;
-  /** Pure and total: never throws, never performs I/O. `expected` is undefined for EXISTS. */
-  evaluate(actual: unknown, expected: unknown): boolean;
+  /**
+   * Pure and total: never throws, never performs I/O. `actual` is never
+   * undefined/null here (missing fields are handled by the evaluator), except
+   * for EXISTS, which receives it as-is. `expected` is undefined for EXISTS.
+   */
+  evaluate(actual: unknown, expected: unknown): OperatorOutcome;
 }
 
 export interface ActionContext {

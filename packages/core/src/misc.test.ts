@@ -17,18 +17,18 @@ describe("registries", () => {
 
   it("register, look up, and reject duplicates / unknown types", () => {
     const ops = createConditionOperatorRegistry();
-    ops.register({ type: "==", label: "equals", evaluate: (a, b) => a === b });
+    ops.register({ type: "==", label: "equals", evaluate: (a, b) => ({ passed: a === b }) });
     expect(ops.has("==")).toBe(true);
-    expect(ops.require("==").evaluate(1, 1)).toBe(true);
+    expect(ops.require("==").evaluate(1, 1)).toEqual({ passed: true });
     expect(ops.list()).toHaveLength(1);
-    expect(() => ops.register({ type: "==", label: "dup", evaluate: () => false })).toThrow(DuplicateRegistrationError);
+    expect(() => ops.register({ type: "==", label: "dup", evaluate: () => ({ passed: false }) })).toThrow(DuplicateRegistrationError);
     expect(() => ops.require(">")).toThrow(UnknownTypeError);
     expect(() => ops.require("DROP TABLE")).toThrow(UnknownTypeError);
   });
 
   it("isolates instances (no global state)", () => {
     const a = createConditionOperatorRegistry();
-    a.register({ type: "==", label: "equals", evaluate: () => true });
+    a.register({ type: "==", label: "equals", evaluate: () => ({ passed: true }) });
     expect(createConditionOperatorRegistry().size).toBe(0);
   });
 });

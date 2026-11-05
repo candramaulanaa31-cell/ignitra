@@ -87,6 +87,22 @@ describe("GET /health — listener heartbeat", () => {
   });
 });
 
+describe("GET /v1/triggers", () => {
+  it("lists every implemented trigger with params schema and payload fields", async () => {
+    const app = await buildServer({ db, chain, logger, version: "0.1.0" });
+    const res = await app.inject({ method: "GET", url: "/v1/triggers" });
+    expect(res.statusCode).toBe(200);
+    const data = res.json().data as Array<{ type: string; kind: string; supports_fast: boolean; params_schema: { properties: Record<string, unknown> }; fields: Array<{ path: string }> }>;
+    expect(data.map((t) => t.type)).toEqual(["TOKEN_TRANSFER", "CONTRACT_EVENT", "NEW_HOLDER", "BALANCE_THRESHOLD", "CONTRACT_DEPLOYED"]);
+    const transfer = data.find((t) => t.type === "TOKEN_TRANSFER");
+    expect(transfer).toMatchObject({ kind: "log", supports_fast: true });
+    expect(Object.keys(transfer?.params_schema.properties ?? {})).toEqual(["token", "wallet", "direction"]);
+    expect(transfer?.fields.map((f) => f.path)).toContain("percent_of_supply");
+    expect(data.find((t) => t.type === "BALANCE_THRESHOLD")).toMatchObject({ kind: "poll", supports_fast: false });
+    await app.close();
+  });
+});
+
 describe("errors", () => {
   it("returns a JSON 404 for unknown routes", async () => {
     const app = await buildServer({ db, chain, logger, version: "0.1.0" });

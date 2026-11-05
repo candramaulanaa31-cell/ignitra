@@ -124,15 +124,23 @@ describe("confirmation", () => {
     expect(await events()).toHaveLength(0);
   });
 
-  it("fetches block timestamps when the node omits them from logs", async () => {
-    const { chain, sync } = setup({ chain: { logTimestamps: false } });
+  it("derives block timestamps from anchor headers when the node omits them (Robinhood RPC sends 0x0)", async () => {
+    // ~10 blocks per second with 1 s timestamps, like mainnet.
+    const { chain, sync } = setup({ chain: { logTimestamps: false, timestampOf: (n) => 1_790_000_000 + Math.floor(n / 10) }, sync: { maxRange: 1000 } });
     await watch(TOKEN);
-    chain.mine([erc20Transfer(TOKEN, ALICE, BOB, 1n)]);
+    for (let i = 0; i < 300; i++) chain.mine(i % 7 === 0 ? [erc20Transfer(TOKEN, ALICE, BOB, BigInt(i))] : []);
     chain.mineEmpty(3);
     await sync.tick();
-    const [row] = await events();
-    expect(row?.blockTimestamp?.getTime()).toBe((chain.block(1)?.timestamp ?? 0) * 1000);
-    expect(chain.calls.blockByHash).toBe(1);
+    const rows = await events();
+    expect(rows.length).toBe(43);
+    for (const row of rows) {
+      const exact = chain.block(row.blockNumber)?.timestamp ?? 0;
+      const derived = (row.blockTimestamp?.getTime() ?? 0) / 1000;
+      expect(Math.abs(derived - exact)).toBeLessThanOrEqual(1);
+    }
+    // Anchors: range ends + one per 64 blocks — not one header per block.
+    expect(chain.calls.blockByNumber).toBeLessThanOrEqual(8);
+    expect(chain.calls.blockByHash ?? 0).toBe(0);
   });
 });
 

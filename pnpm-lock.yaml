@@ -231,12 +231,18 @@ importers:
       '@ignitra/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@ignitra/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
       drizzle-orm:
         specifier: 'catalog:'
         version: 0.45.4(@electric-sql/pglite@0.5.15)(@types/pg@8.23.1)(pg@8.23.1)
       fastify:
         specifier: 'catalog:'
         version: 5.12.8
+      zod:
+        specifier: 'catalog:'
+        version: 4.6.7
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -262,6 +268,9 @@ importers:
       '@ignitra/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@ignitra/engine':
+        specifier: workspace:*
+        version: link:../../packages/engine
       drizzle-orm:
         specifier: 'catalog:'
         version: 0.45.4(@electric-sql/pglite@0.5.15)(@types/pg@8.23.1)(pg@8.23.1)
@@ -406,6 +415,40 @@ importers:
       tsx:
         specifier: 'catalog:'
         version: 4.23.15
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 5.1.0(@types/node@24.19.2)(vite@8.3.5(@types/node@24.19.2)(tsx@4.23.15))
+
+  packages/engine:
+    dependencies:
+      '@ignitra/chain':
+        specifier: workspace:*
+        version: link:../chain
+      '@ignitra/core':
+        specifier: workspace:*
+        version: link:../core
+      '@ignitra/db':
+        specifier: workspace:*
+        version: link:../db
+      drizzle-orm:
+        specifier: 'catalog:'
+        version: 0.45.4(@electric-sql/pglite@0.5.15)(@types/pg@8.23.1)(pg@8.23.1)
+      pino:
+        specifier: 'catalog:'
+        version: 10.4.0
+      viem:
+        specifier: 'catalog:'
+        version: 2.57.16(typescript@6.0.3)(zod@4.6.7)
+      zod:
+        specifier: 'catalog:'
+        version: 4.6.7
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.19.2
       typescript:
         specifier: 'catalog:'
         version: 6.0.3

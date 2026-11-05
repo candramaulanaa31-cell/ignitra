@@ -7,6 +7,7 @@ import {
   index,
   integer,
   jsonb,
+  pgSequence,
   pgTable,
   primaryKey,
   text,
@@ -18,6 +19,7 @@ import {
   ABI_STATUSES,
   CHAIN_EVENT_STATUSES,
   CURSOR_STREAMS,
+  EVALUATION_OUTCOMES,
   FLOW_STATUSES,
   PLANS,
   RUN_STATUSES,
@@ -82,6 +84,8 @@ export const flows = pgTable(
     /** Why the flow is paused/disabled (e.g. auto-paused after repeated failures). */
     statusReason: text("status_reason"),
     currentVersion: integer("current_version").notNull(),
+    /** Last transition to active. Events from blocks before it never trigger the flow. */
+    activatedAt: ts("activated_at"),
     createdAt: ts("created_at").notNull().defaultNow(),
     updatedAt: ts("updated_at")
       .notNull()
@@ -164,6 +168,11 @@ export const runs = pgTable(
     conditionsResult: jsonb("conditions_result").$type<unknown[]>().notNull().default([]),
     status: text("status", { enum: RUN_STATUSES }).notNull().default("queued"),
     statusReason: text("status_reason"),
+    /** chain_events row that triggered the run (log triggers). No FK: events may be pruned. */
+    chainEventId: bigint("chain_event_id", { mode: "number" }),
+    /** Set when the triggering event was reorged out (fast mode / deep reorg). */
+    revertedAt: ts("reverted_at"),
+    revertReason: text("revert_reason"),
     createdAt: ts("created_at").notNull().defaultNow(),
     startedAt: ts("started_at"),
     finishedAt: ts("finished_at"),
@@ -176,6 +185,7 @@ export const runs = pgTable(
     }).onDelete("cascade"),
     uniqueIndex("runs_idempotency_key_key").on(t.idempotencyKey),
     index("runs_flow_created_idx").on(t.flowId, t.createdAt.desc()),
+    index("runs_chain_event_idx").on(t.chainEventId),
     index("runs_open_idx")
       .on(t.status, t.createdAt)
       .where(inList("status", OPEN_RUN_STATUSES)),
@@ -224,6 +234,10 @@ export const runSteps = pgTable(
 // ===========================================================================
 
 const HEX32 = "'^0x[0-9a-f]{64}$'";
+
+/** Consumption order for the matcher. Assigned when an event becomes confirmed / reverted. */
+export const chainEventsConfirmedSeq = pgSequence("chain_events_confirmed_seq");
+export const chainEventsRevertedSeq = pgSequence("chain_events_reverted_seq");
 const ADDR = "'^0x[0-9a-f]{40}$'";
 
 // ---------------------------------------------------------------------------
@@ -316,9 +330,17 @@ export const chainEvents = pgTable(
     confirmedAt: ts("confirmed_at"),
     revertedAt: ts("reverted_at"),
     revertReason: text("revert_reason"),
+    /**
+     * Matcher stream positions. Single writer (the listener lease) means
+     * commit order equals sequence order, so a consumer cursor never skips.
+     */
+    confirmedSeq: bigint("confirmed_seq", { mode: "number" }),
+    revertedSeq: bigint("reverted_seq", { mode: "number" }),
   },
   (t) => [
     unique("chain_events_identity_key").on(t.chainId, t.blockHash, t.logIndex),
+    uniqueIndex("chain_events_confirmed_seq_key").on(t.confirmedSeq),
+    uniqueIndex("chain_events_reverted_seq_key").on(t.revertedSeq),
     index("chain_events_status_block_idx").on(t.chainId, t.status, t.blockNumber),
     index("chain_events_address_block_idx").on(t.chainId, t.address, t.blockNumber),
     index("chain_events_tx_idx").on(t.txHash),
@@ -371,6 +393,67 @@ export const contractAbis = pgTable(
   ],
 );
 
+// ===========================================================================
+// Matching (Phase 3)
+// ===========================================================================
+
+// consumer_offsets — resumable positions of stream consumers (matcher streams).
+export const consumerOffsets = pgTable("consumer_offsets", {
+  name: text("name").primaryKey(),
+  position: bigint("position", { mode: "number" }).notNull(),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+});
+
+// flow_evaluations — sampled, bounded log of matches that did NOT become runs.
+export const flowEvaluations = pgTable(
+  "flow_evaluations",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    flowId: text("flow_id")
+      .notNull()
+      .references(() => flows.id, { onDelete: "cascade" }),
+    flowVersion: integer("flow_version").notNull(),
+    /** Same key a run would have had — at most one evaluation per (event, flow). */
+    idempotencyKey: text("idempotency_key").notNull(),
+    outcome: text("outcome", { enum: EVALUATION_OUTCOMES }).notNull(),
+    reason: text("reason"),
+    triggerEvent: jsonb("trigger_event").$type<Record<string, unknown>>().notNull(),
+    conditionsResult: jsonb("conditions_result").$type<unknown[]>().notNull().default([]),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("flow_evaluations_key").on(t.idempotencyKey),
+    index("flow_evaluations_flow_idx").on(t.flowId, t.id.desc()),
+    check("flow_evaluations_outcome_valid", inList("outcome", EVALUATION_OUTCOMES)),
+  ],
+);
+
+// flow_stats — exact counters (evaluations are sampled; these are not).
+export const flowStats = pgTable("flow_stats", {
+  flowId: text("flow_id")
+    .primaryKey()
+    .references(() => flows.id, { onDelete: "cascade" }),
+  matched: bigint("matched", { mode: "number" }).notNull().default(0),
+  runs: bigint("runs", { mode: "number" }).notNull().default(0),
+  conditionsFailed: bigint("conditions_failed", { mode: "number" }).notNull().default(0),
+  rateLimited: bigint("rate_limited", { mode: "number" }).notNull().default(0),
+  undetermined: bigint("undetermined", { mode: "number" }).notNull().default(0),
+  lastMatchedAt: ts("last_matched_at"),
+  lastRunAt: ts("last_run_at"),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+});
+
+// trigger_state — persistent state of polling triggers (balance side, deployer nonce).
+export const triggerState = pgTable("trigger_state", {
+  flowId: text("flow_id")
+    .primaryKey()
+    .references(() => flows.id, { onDelete: "cascade" }),
+  /** State belongs to one flow version; a new version starts fresh. */
+  flowVersion: integer("flow_version").notNull(),
+  state: jsonb("state").$type<Record<string, unknown>>().notNull(),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+});
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type Flow = typeof flows.$inferSelect;
@@ -390,3 +473,5 @@ export type ChainEvent = typeof chainEvents.$inferSelect;
 export type NewChainEvent = typeof chainEvents.$inferInsert;
 export type ChainSyncStatus = typeof chainSyncStatus.$inferSelect;
 export type ContractAbi = typeof contractAbis.$inferSelect;
+export type FlowEvaluation = typeof flowEvaluations.$inferSelect;
+export type FlowStats = typeof flowStats.$inferSelect;

@@ -13,19 +13,15 @@ import {
   chainSyncStatus,
   contractAbis,
   flows,
-  leases,
   watches,
+  Lease,
   type Database,
   type NewChainEvent,
+  type Tx,
 } from "@ignitra/db";
-import type { WatchKey } from "./filter";
 
-export class LeaseLostError extends Error {
-  constructor(name: string) {
-    super(`lease "${name}" is no longer held by this process`);
-    this.name = "LeaseLostError";
-  }
-}
+export { LeaseLostError } from "@ignitra/db";
+import type { WatchKey } from "./filter";
 
 export interface Cursor {
   readonly blockNumber: number;
@@ -43,8 +39,6 @@ export interface CommitResult {
   readonly deepReverted: number;
 }
 
-type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
-
 /** Postgres caps a statement at 65 535 bind parameters; chain_events rows bind ~17 each. */
 const INSERT_CHUNK = 1000;
 
@@ -57,49 +51,31 @@ export class ListenerStore {
   readonly #db: Database;
   readonly chainId: number;
   readonly owner: string;
-  readonly leaseName: string;
-  readonly #leaseMs: number;
+  readonly #lease: Lease;
 
   constructor(db: Database, opts: { chainId: number; owner: string; leaseMs?: number }) {
     this.#db = db;
     this.chainId = opts.chainId;
     this.owner = opts.owner;
-    this.leaseName = `listener:${opts.chainId}`;
-    this.#leaseMs = opts.leaseMs ?? 30_000;
+    this.#lease = new Lease(db, `listener:${opts.chainId}`, opts.owner, opts.leaseMs ?? 30_000);
   }
 
-  // ---- lease ---------------------------------------------------------------
-
-  /** Acquire or renew. Uses the database clock so hosts with skewed clocks agree. */
-  async acquireLease(): Promise<boolean> {
-    const rows = await this.#db
-      .insert(leases)
-      .values({ name: this.leaseName, owner: this.owner, expiresAt: sql`now() + ${`${this.#leaseMs} milliseconds`}::interval` })
-      .onConflictDoUpdate({
-        target: leases.name,
-        set: {
-          owner: this.owner,
-          expiresAt: sql`now() + ${`${this.#leaseMs} milliseconds`}::interval`,
-          acquiredAt: sql`case when ${leases.owner} = ${this.owner} then ${leases.acquiredAt} else now() end`,
-        },
-        setWhere: sql`${leases.owner} = ${this.owner} or ${leases.expiresAt} < now()`,
-      })
-      .returning({ owner: leases.owner });
-    return rows[0]?.owner === this.owner;
+  get leaseName(): string {
+    return this.#lease.name;
   }
 
-  async releaseLease(): Promise<void> {
-    await this.#db.delete(leases).where(and(eq(leases.name, this.leaseName), eq(leases.owner, this.owner)));
+  acquireLease(): Promise<boolean> {
+    return this.#lease.acquire();
   }
 
-  async #fence(tx: Tx): Promise<void> {
-    const rows = await tx
-      .update(leases)
-      .set({ expiresAt: sql`now() + ${`${this.#leaseMs} milliseconds`}::interval` })
-      .where(and(eq(leases.name, this.leaseName), eq(leases.owner, this.owner), sql`${leases.expiresAt} > now()`))
-      .returning({ name: leases.name });
-    if (rows.length === 0) throw new LeaseLostError(this.leaseName);
+  releaseLease(): Promise<void> {
+    return this.#lease.release();
   }
+
+  #fence(tx: Tx): Promise<void> {
+    return this.#lease.fence(tx);
+  }
+
 
   // ---- cursors -------------------------------------------------------------
 
@@ -193,7 +169,12 @@ export class ListenerStore {
       const ids: number[] = [];
       let inserted = 0;
       for (let i = 0; i < args.rows.length; i += INSERT_CHUNK) {
-        const chunk = args.rows.slice(i, i + INSERT_CHUNK).map((r) => ({ ...r, status: "confirmed" as const, confirmedAt: sql`now()` }));
+        const chunk = args.rows.slice(i, i + INSERT_CHUNK).map((r) => ({
+          ...r,
+          status: "confirmed" as const,
+          confirmedAt: sql`now()`,
+          confirmedSeq: sql`nextval('chain_events_confirmed_seq')`,
+        }));
         const result = await tx
           .insert(chainEvents)
           .values(chunk)
@@ -202,6 +183,8 @@ export class ListenerStore {
             set: {
               status: "confirmed",
               confirmedAt: sql`coalesce(${chainEvents.confirmedAt}, now())`,
+              // A fresh position whenever the row (re)enters confirmed: the matcher sees it exactly then.
+              confirmedSeq: sql`case when ${chainEvents.status} = 'confirmed' then ${chainEvents.confirmedSeq} else nextval('chain_events_confirmed_seq') end`,
               eventName: sql`coalesce(excluded.event_name, ${chainEvents.eventName})`,
               eventSignature: sql`coalesce(excluded.event_signature, ${chainEvents.eventSignature})`,
               args: sql`coalesce(excluded.args, ${chainEvents.args})`,
@@ -222,6 +205,7 @@ export class ListenerStore {
           status: "reverted",
           revertedAt: sql`now()`,
           revertReason: sql`case when ${chainEvents.status} = 'confirmed' then 'deep_reorg' else 'reorg' end`,
+          revertedSeq: sql`nextval('chain_events_reverted_seq')`,
         })
         .where(
           and(

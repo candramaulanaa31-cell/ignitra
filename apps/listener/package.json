@@ -17,7 +17,8 @@
     "drizzle-orm": "catalog:",
     "zod": "catalog:",
     "pino": "catalog:",
-    "viem": "catalog:"
+    "viem": "catalog:",
+    "@ignitra/engine": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "catalog:",

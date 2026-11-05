@@ -2,6 +2,8 @@ import Fastify, { type FastifyError } from "fastify";
 import type { ChainConfig } from "@ignitra/core";
 import type { Logger } from "@ignitra/core/server";
 import { eq } from "drizzle-orm";
+import { z } from "zod";
+import { createTriggerModules, type TriggerModuleRegistry } from "@ignitra/engine";
 import { chainSyncStatus, type DbHandle } from "@ignitra/db";
 
 export interface ServerDeps {
@@ -13,6 +15,28 @@ export interface ServerDeps {
   readonly healthTimeoutMs?: number;
   /** Listener heartbeat older than this is reported as stale. */
   readonly listenerStaleMs?: number;
+  readonly triggers?: TriggerModuleRegistry;
+}
+
+/** Public trigger catalog (builder + docs): params as JSON Schema, payload fields for conditions/templates. */
+function triggerCatalog(registry: TriggerModuleRegistry) {
+  return registry.list().map((m) => {
+    let fields: unknown[] = [];
+    try {
+      fields = [...m.fields({} as never)];
+    } catch {
+      fields = [];
+    }
+    return {
+      type: m.type,
+      kind: m.kind,
+      label: m.label,
+      description: m.description,
+      supports_fast: m.supportsFast,
+      params_schema: z.toJSONSchema(m.paramsSchema, { io: "input", unrepresentable: "any" }),
+      fields,
+    };
+  });
 }
 
 export type ListenerHealth =
@@ -100,6 +124,9 @@ export async function buildServer(deps: ServerDeps) {
       time: new Date().toISOString(),
     });
   });
+
+  const catalog = triggerCatalog(deps.triggers ?? createTriggerModules());
+  app.get("/v1/triggers", async () => ({ data: catalog }));
 
   app.setNotFoundHandler((req, reply) => {
     const body: ApiErrorBody = { error: { code: "not_found", message: `${req.method} ${req.url} not found` } };

@@ -1,0 +1,28 @@
+{
+  "name": "@ignitra/engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Trigger modules, enrichment, flow service and the matcher that turns chain events into queued runs.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ignitra/chain": "workspace:*",
+    "@ignitra/core": "workspace:*",
+    "@ignitra/db": "workspace:*",
+    "drizzle-orm": "catalog:",
+    "pino": "catalog:",
+    "viem": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

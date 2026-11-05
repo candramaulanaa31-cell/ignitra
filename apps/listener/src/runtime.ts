@@ -31,6 +31,7 @@ export class ListenerRuntime {
   readonly #log: Logger;
   readonly #pollMs: number;
   readonly #lagAlert: number;
+  readonly #onProgress: () => void;
   #last: TickReport | null = null;
   #lastOkAt: number | null = null;
   #lastError: string | null = null;
@@ -44,6 +45,8 @@ export class ListenerRuntime {
     logger: Logger;
     pollIntervalMs: number;
     lagAlertBlocks: number;
+    /** Called after a leader tick that wrote events (wakes the matcher). */
+    onProgress?: () => void;
   }) {
     this.#sync = deps.sync;
     this.#store = deps.store;
@@ -52,6 +55,7 @@ export class ListenerRuntime {
     this.#log = deps.logger;
     this.#pollMs = deps.pollIntervalMs;
     this.#lagAlert = deps.lagAlertBlocks;
+    this.#onProgress = deps.onProgress ?? (() => {});
   }
 
   async run(signal: AbortSignal): Promise<void> {
@@ -72,6 +76,7 @@ export class ListenerRuntime {
             this.#log.info({ confirmed: report.confirmed }, "confirmed events");
           }
           if (report.pending && report.pending.inserted > 0) this.#log.info({ pending: report.pending }, "pending events");
+          if (report.confirmed || report.pending || report.deepReorg) this.#onProgress();
           // Catching up: go again immediately instead of sleeping.
           if (report.confirmed && report.confirmed.to < (report.confirmedHead ?? 0)) delay = 0;
           await this.#writeStatus(report, null);
@@ -131,7 +136,7 @@ export class ListenerRuntime {
 }
 
 /** Tiny health endpoint for process supervisors. Binds to localhost by default. */
-export function startHealthServer(runtime: Pick<ListenerRuntime, "health">, host: string, port: number): Promise<Server> {
+export function startHealthServer(runtime: { health(): { status: string } }, host: string, port: number): Promise<Server> {
   const server = createServer((req, res) => {
     if (req.method === "GET" && (req.url === "/health" || req.url === "/healthz")) {
       const snapshot = runtime.health();

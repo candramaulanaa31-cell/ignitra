@@ -8,8 +8,9 @@ listener ──▶ trigger + condition engine ──▶ runs (queued) ──▶ 
  (chain)        (match, enrich, evaluate)     (unique key)     (retry)     (Discord, webhook, push…)
 ```
 
-> **Status: Phase 2 — Chain listener.** Reorg-safe, resumable ingestion of decoded
-> events for watched contracts. Triggers (matching events to flows) arrive in Phase 3.
+> **Status: Phase 3 — Triggers & conditions.** Chain events become queued runs for
+> matching flows, with full evidence and per-condition traces. Executing runs (actions)
+> arrives in Phase 4.
 
 ## Layout
 
@@ -17,9 +18,10 @@ listener ──▶ trigger + condition engine ──▶ runs (queued) ──▶ 
 |---|---|
 | `apps/api` | Fastify HTTP API. Phase 1: `GET /health`, JSON errors. |
 | `apps/web` | Next.js app (landing + `/app` placeholder). |
-| `apps/listener` | Chain listener: polling/WS head tracking, log ingestion, confirmations, reorg handling, health endpoint, operator CLI. |
+| `apps/listener` | Chain process: ingestion (sync) + matcher, health endpoint, operator CLI (`pnpm ops`). |
 | `apps/runner` | Flow runner process. Phase 1: boots, connects DB. |
 | `packages/core` | Domain core. `@ignitra/core` is isomorphic; `@ignitra/core/server` is Node-only. |
+| `packages/engine` | Trigger modules, token enrichment, condition evaluation glue, flow service, matcher (events → runs). |
 | `packages/chain` | RPC reader with failover, built-in ABIs, event decoder, explorer ABI registry. Test doubles under `@ignitra/chain/testing`. |
 | `packages/db` | Drizzle schema, SQL migrations, driver-agnostic client (Postgres or PGlite). |
 | `packages/sdk` | `@ignitra/sdk` skeleton (Phase 8). |
@@ -120,6 +122,76 @@ pnpm dev:listener                               # health: http://127.0.0.1:4001/
 ABI fetching needs a free Blockscout key (`EXPLORER_API_KEY`, from dev.blockscout.com). Without one,
 the built-in ABIs still decode the common standards.
 
+## Triggers, conditions and runs
+
+```
+chain_events ──▶ matcher ──▶ trigger module ──▶ conditions ──▶ hourly cap ──▶ runs (queued)
+  confirmed stream → confirmed-mode flows          │ fail          │ over
+  head stream      → fast-mode flows               ▼               ▼
+  reverted stream  → mark / cancel runs      flow_evaluations (sampled) + flow_stats (exact)
+```
+
+| Trigger | Kind | Fires when |
+|---|---|---|
+| `TOKEN_TRANSFER` | log | An ERC-20 transfer of `token`, optionally only `in`/`out` of a `wallet`. |
+| `CONTRACT_EVENT` | log | A specific event of `address`. A bare name is resolved to its full fragment at save time and pinned in the flow version. |
+| `NEW_HOLDER` | log | An address's balance is 0 before a **transaction** and > 0 after it. Pass-through hops (routers) don't count. Confirmed mode only. |
+| `BALANCE_THRESHOLD` | poll | A wallet's ETH or token balance **crosses** `threshold` (`below` / `above` / `cross`). It fires once per crossing. |
+| `CONTRACT_DEPLOYED` | poll | A watched deployer creates a contract with CREATE. Detected via nonce → derived address → code. For CREATE2 factories, use `CONTRACT_EVENT` on the factory's creation event. |
+
+How each trigger is built, from real mainnet behaviour (2026-11-05):
+
+- **Re-decoded from raw data.** Triggers re-decode raw topics and data with their own canonical fragment, never the contract's ABI. WETH-style `src/dst/wad` naming can't break them.
+- **NEW_HOLDER needs no indexer.** It keeps exact running balances, seeded once per batch at block N-1 through **Multicall3**. Batches never split a block. If the seed state was pruned (the public RPC keeps ~10–20 min), the event is recorded as `undetermined`, never guessed.
+- **CONTRACT_DEPLOYED uses nonces.** The RPC has no `debug_*`/`trace_*`, so the trigger relies on deployer nonces instead of block scans.
+- **Block timestamps are anchored.** The public RPC returns `blockTimestamp: "0x0"` in logs, so timestamps are exact at anchor headers and interpolated between them (error < 1 s).
+
+**Conditions** (pure, fully tested, in `@ignitra/core`) follow these rules:
+
+- Numbers and numeric strings compare as **exact decimals**: `"1000000000000000000000"` equals `1e21`.
+- `0x` hex compares case-insensitively. Other strings compare exactly.
+- A missing or null field **fails** every operator except `EXISTS`. A flow never runs on data it doesn't have.
+- Incompatible types fail with `type_mismatch`.
+- Every leaf is evaluated, so each run stores the full pass/fail trace with actual values.
+- Fields are checked against the trigger's catalog at save time. `symbol` gets rejected with the hint *did you mean "token.symbol"?*
+- Time windows use block time in WIB, e.g. `time.minutes_wib >= 480` (08:00).
+
+**Runs and idempotency:**
+
+- The run key is `chain_id:tx_hash:log_index:flow_id` for log triggers, `chain_id:balance:<block>:flow_id` for balance thresholds and `chain_id:deploy:<contract>:flow_id` for deployments.
+- Keys are unique in Postgres, so replays are no-ops.
+- Events from blocks before a flow's `activated_at` never trigger it.
+
+**Reorgs:**
+
+- Fast-mode runs whose event is reorged out get `reverted_at`. Still-queued ones are cancelled (`skipped`, `event_reverted`).
+- If the same transaction re-lands in another block, the run is re-pointed, not reverted.
+
+**Runaway protection:**
+
+- `settings.max_runs_per_hour` is enforced from the runs table.
+- If dropped events reach 3× the cap within an hour, the flow is **auto-paused** with a reason that explains how to fix it.
+
+```bash
+pnpm ops flow create flow.json --owner 0x…      # validates, normalizes, activates
+pnpm ops flow list                              # status + matched / runs / failed / limited
+pnpm ops runs --flow fl_…                       # runs with condition traces
+pnpm ops evals --flow fl_…                      # why matching events did NOT run
+pnpm ops flow pause|resume|show|update …
+```
+
+`GET /v1/triggers` serves the trigger catalog: params as JSON Schema, plus the payload fields available to conditions and templates.
+
+Validated live on mainnet (USDG, ~2,000 transfers in 90 s):
+
+| Check | Result |
+|---|---|
+| Whale flow | 208 runs; 1,784 transfers failed their condition and are counted and sampled |
+| Firehose capped at 20/h | 20 runs, 134 dropped, auto-paused |
+| Fast-mode approvals | 307 runs at head |
+| Native balance crossing on a bot wallet | Fired once |
+| NEW_HOLDER, checked on-chain | Every checkable run held a balance at the end of its block |
+
 ## Scripts
 
 | Command | |
@@ -130,7 +202,7 @@ the built-in ABIs still decode the common standards.
 | `pnpm build` | production build of the web app |
 | `pnpm dev` | all apps in parallel (needs real Postgres) |
 | `pnpm dev:listener` | chain listener |
-| `pnpm listener:cli …` | manage watches, inspect events and sync status |
+| `pnpm ops …` | flows, runs, evaluations, watches, sync status, ingestion verify |
 
 ## Notes
 
@@ -142,7 +214,7 @@ the built-in ABIs still decode the common standards.
 
 1. **Foundation** ✅
 2. **Chain listener** ✅ blocks, logs, ABI registry, decoding, checkpoints, confirmations, reorgs
-3. Trigger and condition engine
+3. **Trigger and condition engine** ✅ five chain triggers, conditions, matcher, idempotent runs, runaway protection
 4. Flow runner + WEBHOOK / DISCORD / WEB_PUSH
 5. SIWE, connections, schedule, chain read, plan limits
 6. Builder UI + email / Google Sheets / HTTP
