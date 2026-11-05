@@ -1,0 +1,30 @@
+{
+  "name": "@ignitra/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Postgres schema, migrations and client (node-postgres or embedded PGlite).",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "generate": "drizzle-kit generate",
+    "migrate": "tsx src/migrate-cli.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "catalog:",
+    "@ignitra/core": "workspace:*",
+    "drizzle-orm": "catalog:",
+    "pg": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@types/pg": "catalog:",
+    "drizzle-kit": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "@ignitra/sdk",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "TypeScript SDK for the IGNITRA API. Skeleton in Phase 1; implemented in Phase 8.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:"
+  }
+}

@@ -1,0 +1,77 @@
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { resolveChainConfig } from "@ignitra/core";
+import { createLogger } from "@ignitra/core/server";
+import { createDb, type DbHandle } from "@ignitra/db";
+import { buildServer } from "./server";
+
+const chain = resolveChainConfig({ chainId: 4663 });
+const logger = createLogger("api-test", "silent");
+
+let db: DbHandle;
+
+beforeAll(async () => {
+  db = await createDb("pglite://memory");
+  await db.migrate();
+}, 30_000);
+
+afterAll(async () => {
+  await db.close();
+});
+
+describe("GET /health", () => {
+  it("reports ok with chain and db status", async () => {
+    const app = await buildServer({ db, chain, logger, version: "0.1.0" });
+    const res = await app.inject({ method: "GET", url: "/health" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      status: "ok",
+      service: "api",
+      version: "0.1.0",
+      chain: { id: 4663, name: "Robinhood Chain" },
+      db: { driver: "pglite", status: "ok" },
+    });
+    await app.close();
+  });
+
+  it("returns 503 and hides driver errors when the database is down", async () => {
+    const broken: DbHandle = {
+      ...db,
+      ping: () => Promise.reject(new Error("connect ECONNREFUSED postgres://admin:hunter2@db:5432")),
+    };
+    const app = await buildServer({ db: broken, chain, logger, version: "0.1.0" });
+    const res = await app.inject({ method: "GET", url: "/health" });
+    expect(res.statusCode).toBe(503);
+    expect(res.json()).toMatchObject({ status: "degraded", db: { status: "error", error: "database unreachable" } });
+    expect(res.body).not.toContain("hunter2");
+    await app.close();
+  });
+
+  it("times out a hanging database ping", async () => {
+    const hanging: DbHandle = { ...db, ping: () => new Promise<number>(() => {}) };
+    const app = await buildServer({ db: hanging, chain, logger, version: "0.1.0", healthTimeoutMs: 50 });
+    const res = await app.inject({ method: "GET", url: "/health" });
+    expect(res.statusCode).toBe(503);
+    await app.close();
+  });
+});
+
+describe("errors", () => {
+  it("returns a JSON 404 for unknown routes", async () => {
+    const app = await buildServer({ db, chain, logger, version: "0.1.0" });
+    const res = await app.inject({ method: "GET", url: "/v1/nope" });
+    expect(res.statusCode).toBe(404);
+    expect(res.json()).toEqual({ error: { code: "not_found", message: "GET /v1/nope not found" } });
+    await app.close();
+  });
+
+  it("never leaks internal error messages", async () => {
+    const app = await buildServer({ db, chain, logger, version: "0.1.0" });
+    app.get("/boom", async () => {
+      throw new Error("secret internals");
+    });
+    const res = await app.inject({ method: "GET", url: "/boom" });
+    expect(res.statusCode).toBe(500);
+    expect(res.json()).toEqual({ error: { code: "internal_error", message: "Internal server error" } });
+    await app.close();
+  });
+});

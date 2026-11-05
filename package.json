@@ -1,0 +1,21 @@
+{
+  "name": "ignitra",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.4.2",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter \"./apps/*\" dev",
+    "dev:api": "pnpm --filter @ignitra/api dev",
+    "dev:web": "pnpm --filter @ignitra/web dev",
+    "build": "pnpm --filter @ignitra/web build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "check": "pnpm typecheck && pnpm test",
+    "db:generate": "pnpm --filter @ignitra/db generate",
+    "db:migrate": "pnpm --filter @ignitra/db migrate",
+    "gen:secret": "node scripts/gen-secret.mjs"
+  }
+}
