@@ -173,6 +173,16 @@ export const runs = pgTable(
     /** Set when the triggering event was reorged out (fast mode / deep reorg). */
     revertedAt: ts("reverted_at"),
     revertReason: text("revert_reason"),
+    // ---- execution queue (Phase 4) ----
+    /** Earliest time a worker may (re)claim the run; null = now. Set when a step backs off. */
+    nextAttemptAt: ts("next_attempt_at"),
+    /** Times a worker picked the run up. */
+    attempts: integer("attempts").notNull().default(0),
+    /** Worker holding the run while running, and until when (expired = reclaimable after a crash). */
+    lockedBy: text("locked_by"),
+    leaseUntil: ts("lease_until"),
+    /** `run.reverted` notices sent to webhooks after a delivered run's event was reorged out. */
+    revertNotice: jsonb("revert_notice").$type<Record<string, unknown>>(),
     createdAt: ts("created_at").notNull().defaultNow(),
     startedAt: ts("started_at"),
     finishedAt: ts("finished_at"),
@@ -186,6 +196,8 @@ export const runs = pgTable(
     uniqueIndex("runs_idempotency_key_key").on(t.idempotencyKey),
     index("runs_flow_created_idx").on(t.flowId, t.createdAt.desc()),
     index("runs_chain_event_idx").on(t.chainEventId),
+    index("runs_claim_idx").on(t.nextAttemptAt, t.createdAt).where(sql`status = 'queued'`),
+    index("runs_lease_idx").on(t.leaseUntil).where(sql`status = 'running'`),
     index("runs_open_idx")
       .on(t.status, t.createdAt)
       .where(inList("status", OPEN_RUN_STATUSES)),
@@ -440,6 +452,15 @@ export const flowStats = pgTable("flow_stats", {
   undetermined: bigint("undetermined", { mode: "number" }).notNull().default(0),
   lastMatchedAt: ts("last_matched_at"),
   lastRunAt: ts("last_run_at"),
+  // ---- execution outcomes (Phase 4) ----
+  runsSucceeded: bigint("runs_succeeded", { mode: "number" }).notNull().default(0),
+  runsPartial: bigint("runs_partial", { mode: "number" }).notNull().default(0),
+  runsFailed: bigint("runs_failed", { mode: "number" }).notNull().default(0),
+  runsSkipped: bigint("runs_skipped", { mode: "number" }).notNull().default(0),
+  /** Failed runs in a row; reset by any succeeded/partial run. Drives auto-pause. */
+  consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+  lastError: text("last_error"),
+  lastFinishedAt: ts("last_finished_at"),
   updatedAt: ts("updated_at").notNull().defaultNow(),
 });
 
@@ -453,6 +474,53 @@ export const triggerState = pgTable("trigger_state", {
   state: jsonb("state").$type<Record<string, unknown>>().notNull(),
   updatedAt: ts("updated_at").notNull().defaultNow(),
 });
+
+// ===========================================================================
+// Delivery (Phase 4)
+// ===========================================================================
+
+// push_subscriptions — Web Push endpoints of a user's browsers / installed PWA.
+export const pushSubscriptions = pgTable(
+  "push_subscriptions",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    endpoint: text("endpoint").notNull(),
+    p256dh: text("p256dh").notNull(),
+    auth: text("auth").notNull(),
+    userAgent: text("user_agent"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    lastSuccessAt: ts("last_success_at"),
+    failureCount: integer("failure_count").notNull().default(0),
+    /** Set when the push service says the subscription is gone (404/410). */
+    disabledAt: ts("disabled_at"),
+  },
+  (t) => [
+    uniqueIndex("push_subscriptions_endpoint_key").on(t.endpoint),
+    index("push_subscriptions_user_idx").on(t.userId),
+    check("push_subscriptions_https", sql`endpoint like 'https://%'`),
+  ],
+);
+
+// owner_notifications — system notices to a flow owner (auto-pause, …): inbox + push.
+export const ownerNotifications = pgTable(
+  "owner_notifications",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    flowId: text("flow_id").references(() => flows.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    message: text("message").notNull(),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    /** Push delivery attempt finished (any outcome). */
+    pushedAt: ts("pushed_at"),
+  },
+  (t) => [index("owner_notifications_user_idx").on(t.userId, t.createdAt.desc()), index("owner_notifications_unpushed_idx").on(t.createdAt).where(sql`pushed_at is null`)],
+);
 
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
@@ -475,3 +543,5 @@ export type ChainSyncStatus = typeof chainSyncStatus.$inferSelect;
 export type ContractAbi = typeof contractAbis.$inferSelect;
 export type FlowEvaluation = typeof flowEvaluations.$inferSelect;
 export type FlowStats = typeof flowStats.$inferSelect;
+export type PushSubscription = typeof pushSubscriptions.$inferSelect;
+export type OwnerNotification = typeof ownerNotifications.$inferSelect;

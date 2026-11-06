@@ -15,7 +15,8 @@
     "fastify": "catalog:",
     "drizzle-orm": "catalog:",
     "@ignitra/engine": "workspace:*",
-    "zod": "catalog:"
+    "zod": "catalog:",
+    "@ignitra/actions": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "catalog:",

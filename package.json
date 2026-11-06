@@ -19,6 +19,8 @@
     "gen:secret": "node scripts/gen-secret.mjs",
     "dev:listener": "pnpm --filter @ignitra/listener dev",
     "listener:cli": "pnpm --filter @ignitra/listener cli",
-    "ops": "pnpm --filter @ignitra/listener cli"
+    "ops": "pnpm --filter @ignitra/listener cli",
+    "gen:vapid": "node scripts/gen-vapid.mjs",
+    "dev:runner": "pnpm --filter @ignitra/runner dev"
   }
 }

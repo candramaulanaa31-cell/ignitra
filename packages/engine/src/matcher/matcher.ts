@@ -400,7 +400,14 @@ export class Matcher {
     if (due.length === 0) return { flows: 0, runs: 0, errors: 0 };
     const cursor = await this.store.confirmedCursor();
     if (cursor === null) return { flows: 0, runs: 0, errors: 0 };
-    const block = await this.#reader.blockByNumber(cursor);
+    let block;
+    try {
+      block = await this.#reader.blockByNumber(cursor);
+    } catch (err) {
+      // e.g. RPC 429: streams were already committed; just sample next interval.
+      this.#log.warn({ err: (err as Error).message }, "poll triggers: confirmed block unavailable — retrying next interval");
+      return { flows: 0, runs: 0, errors: 1 };
+    }
     if (!block) return { flows: 0, runs: 0, errors: 0 };
 
     let created = 0;

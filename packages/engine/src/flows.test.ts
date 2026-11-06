@@ -1,7 +1,9 @@
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { addr } from "@ignitra/chain/testing";
-import { createDb, flowVersions, flows, triggerState, users, watches, type DbHandle } from "@ignitra/db";
+import { newId } from "@ignitra/core";
+import { createActionModules } from "@ignitra/actions";
+import { connections, createDb, flowVersions, flows, triggerState, users, watches, type DbHandle } from "@ignitra/db";
 import { FlowValidationError, createFlow, ensureUser, setFlowStatus, updateFlowDefinition, validateFlowDefinition, type FlowServiceDeps } from "./flows";
 import { createTriggerModules } from "./triggers/index";
 
@@ -73,6 +75,63 @@ describe("validateFlowDefinition", () => {
   it("surfaces prepare() failures (unresolvable event names)", async () => {
     const issues = await issuesOf({ ...bigBuys, trigger: { type: "CONTRACT_EVENT", params: { address: TOKEN, event: "Transfer" } }, conditions: undefined });
     expect(issues[0]).toMatch(/^trigger\.params: event "Transfer" is ambiguous/);
+  });
+});
+
+describe("action validation", () => {
+  const withActions = () => ({ ...deps, actions: createActionModules() });
+  const telegramDef = (text: string, connectionId: string) => ({
+    trigger: { type: "TOKEN_TRANSFER", params: { token: TOKEN } },
+    actions: [{ step_id: "notify", type: "TELEGRAM", params: { connection_id: connectionId, text } }],
+  });
+  const issues = async (input: unknown, ownerId?: string) => {
+    try {
+      await validateFlowDefinition(input, { ...withActions(), db: h.db }, ownerId);
+      return [];
+    } catch (err) {
+      if (!(err instanceof FlowValidationError)) throw err;
+      return err.issues.map((i) => `${i.path}: ${i.message}`);
+    }
+  };
+  async function telegramConnection(ownerId: string): Promise<string> {
+    const id = newId("connection");
+    await h.db.insert(connections).values({ id, ownerId, type: "telegram", label: "alerts", secretEnc: { v: 1, alg: "AES-256-GCM", kid: "k1", wiv: "", wdek: "", wtag: "", iv: "", ct: "", tag: "" }, metadata: { chat_id: "-1001" } });
+    return id;
+  }
+
+  it("rejects DISCORD with a pointer to TELEGRAM", async () => {
+    expect(await issues({ ...bigBuys, conditions: undefined })).toEqual(["actions.0.type: DISCORD is not available yet (use TELEGRAM)"]);
+  });
+
+  it("checks connections belong to the owner and match the action", async () => {
+    const owner = await ensureUser(h.db, addr(0xc1));
+    const stranger = await ensureUser(h.db, addr(0xc2));
+    const mine = await telegramConnection(owner);
+    const theirs = await telegramConnection(stranger);
+    expect(await issues(telegramDef("hi", mine), owner)).toEqual([]);
+    expect(await issues(telegramDef("hi", theirs), owner)).toEqual([`actions.0.params.connection_id: connection ${theirs} not found`]);
+  });
+
+  it("validates template variables against the trigger's fields and earlier steps", async () => {
+    const owner = await ensureUser(h.db, addr(0xc3));
+    const conn = await telegramConnection(owner);
+    expect(await issues(telegramDef("{{trigger.amout}}", conn), owner)).toEqual(['actions.0.params.text: unknown variable "trigger.amout"']);
+    expect((await issues(telegramDef("<b>{{trigger.amount_formatted}}</b> <div>", conn), owner))[0]).toMatch(/^actions\.0\.params\.text: <div> is not supported/);
+    const chained = {
+      trigger: { type: "TOKEN_TRANSFER", params: { token: TOKEN } },
+      actions: [
+        { step_id: "notify", type: "TELEGRAM", params: { connection_id: conn, text: "{{trigger.amount_formatted}} {{trigger.token.symbol}}" } },
+        { step_id: "push", type: "WEB_PUSH", params: { title: "msg {{steps.notify.message_id}}", body: "{{steps.nope.x}}" } },
+      ],
+    };
+    expect(await issues(chained, owner)).toEqual(['actions.1.params.body: "steps.nope.x": steps can only reference an earlier step\'s output']);
+  });
+
+  it("stores action params with their defaults applied", async () => {
+    const owner = await ensureUser(h.db, addr(0xc4));
+    const conn = await telegramConnection(owner);
+    const def = await validateFlowDefinition(telegramDef("hi", conn), { ...withActions(), db: h.db }, owner);
+    expect(def.actions[0]?.params).toEqual({ connection_id: conn, text: "hi", parse_mode: "html", disable_link_preview: true, silent: false });
   });
 });
 

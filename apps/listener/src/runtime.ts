@@ -1,4 +1,3 @@
-import { createServer, type Server } from "node:http";
 import type { Logger } from "pino";
 import type { EndpointStats } from "@ignitra/chain";
 import type { HeadWatcher } from "./head";
@@ -133,22 +132,4 @@ export class ListenerRuntime {
       rpc: this.#rpcStats(),
     };
   }
-}
-
-/** Tiny health endpoint for process supervisors. Binds to localhost by default. */
-export function startHealthServer(runtime: { health(): { status: string } }, host: string, port: number): Promise<Server> {
-  const server = createServer((req, res) => {
-    if (req.method === "GET" && (req.url === "/health" || req.url === "/healthz")) {
-      const snapshot = runtime.health();
-      res.writeHead(snapshot.status === "degraded" ? 503 : 200, { "content-type": "application/json" });
-      res.end(JSON.stringify(snapshot));
-      return;
-    }
-    res.writeHead(404, { "content-type": "application/json" });
-    res.end(JSON.stringify({ error: { code: "not_found", message: "not found" } }));
-  });
-  return new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(port, host, () => resolve(server));
-  });
 }

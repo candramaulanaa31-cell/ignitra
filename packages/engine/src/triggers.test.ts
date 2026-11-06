@@ -384,6 +384,63 @@ describe("CONTRACT_DEPLOYED", () => {
   });
 });
 
+describe("field catalogs match real payloads", () => {
+  /** Leaf paths of a payload: what a template or condition could reference. */
+  const leafPaths = (value: unknown, prefix = ""): string[] =>
+    value !== null && typeof value === "object" && !Array.isArray(value)
+      ? Object.entries(value as Record<string, unknown>).flatMap(([k, v]) => leafPaths(v, prefix ? `${prefix}.${k}` : k))
+      : [prefix];
+  const known = (fields: ReturnType<typeof tokenTransferTrigger.fields>, path: string) =>
+    fields.some((f) => f.path === path || ((f.type === "object" || f.type === "array") && path.startsWith(`${f.path}.`)));
+
+  it("every field a trigger emits is declared (so templates using it pass validation)", async () => {
+    const chain = new FakeChain();
+    const token = chain.token(TOKEN, { symbol: "USDG", decimals: 6 });
+    token.seed(ALICE, 100n);
+    chain.mine([token.transfer(ALICE, BOB, 10n)]);
+    const rt = runtime(chain);
+    const transfer = (await tokenTransferTrigger.matchBatch(views(chain), parse(tokenTransferTrigger.paramsSchema, { token: TOKEN }), rt, scope))[0];
+    const holder = (await createNewHolderTrigger().matchBatch(views(chain), { token: TOKEN }, rt, scope))[0];
+    const fragment = "event Transfer(address indexed from, address indexed to, uint256 value)";
+    const event = (await contractEventTrigger.matchBatch(views(chain), { address: TOKEN, event: fragment }, rt, scope))[0];
+    const cases = [
+      [transfer, tokenTransferTrigger.fields(parse(tokenTransferTrigger.paramsSchema, { token: TOKEN }))],
+      [holder, createNewHolderTrigger().fields({ token: TOKEN })],
+      [event, contractEventTrigger.fields({ address: TOKEN, event: fragment })],
+    ] as const;
+    for (const [outcome, fields] of cases) {
+      expect(outcome?.kind).toBe("match");
+      const undeclared = leafPaths(outcome?.kind === "match" ? outcome.payload : {}).filter((p) => !known(fields, p));
+      expect(undeclared).toEqual([]);
+    }
+  });
+
+  it("poll triggers too", async () => {
+    const chain = new FakeChain();
+    const token = chain.token(TOKEN, { symbol: "USDG", decimals: 6 });
+    const W = addr(0x7a11e7);
+    const rt = runtime(chain);
+    const balanceParams = parse(balanceThresholdTrigger.paramsSchema, { wallet: W, asset: TOKEN, threshold: "1", direction: "cross" });
+    chain.mine([token.mint(W, 2_000_000n)]);
+    const first = await balanceThresholdTrigger.poll({ params: balanceParams, state: null, block: (await chain.blockByNumber(chain.head))!, scope }, rt);
+    chain.mine([token.burn(W, 1_500_000n)]);
+    const crossed = await balanceThresholdTrigger.poll({ params: balanceParams, state: first.state, block: (await chain.blockByNumber(chain.head))!, scope }, rt);
+
+    const D = addr(0xde9107e2);
+    const init = await contractDeployedTrigger.poll({ params: { deployer: D }, state: null, block: (await chain.blockByNumber(chain.head))!, scope }, rt);
+    chain.mine([], { txs: [{ from: D, code: "0x60" }] });
+    const deployed = await contractDeployedTrigger.poll({ params: { deployer: D }, state: init.state, block: (await chain.blockByNumber(chain.head))!, scope }, rt);
+
+    for (const [outcome, fields] of [
+      [crossed.outcomes[0], balanceThresholdTrigger.fields(balanceParams)],
+      [deployed.outcomes[0], contractDeployedTrigger.fields({ deployer: D })],
+    ] as const) {
+      expect(outcome?.kind).toBe("match");
+      expect(leafPaths(outcome?.kind === "match" ? outcome.payload : {}).filter((p) => !known(fields, p))).toEqual([]);
+    }
+  });
+});
+
 describe("watches", () => {
   it("log triggers watch exactly (token|address, topic0)", () => {
     const transfer = normalizeHash("0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef");

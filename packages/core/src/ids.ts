@@ -11,6 +11,8 @@ export const ID_PREFIXES = {
   run: "run",
   apiKey: "key",
   watch: "wat",
+  pushSubscription: "psub",
+  notification: "ntf",
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;

@@ -48,6 +48,7 @@ export const CHAIN_EVIDENCE_FIELDS: readonly FieldSpec[] = [
   { path: "time.iso", type: "string", description: "Event time, ISO-8601 UTC" },
   { path: "time.date_wib", type: "string", description: "Event date in WIB, YYYY-MM-DD" },
   { path: "time.hour_wib", type: "number", description: "Hour of day in WIB, 0-23" },
+  { path: "time.minute_wib", type: "number", description: "Minute of the hour in WIB, 0-59" },
   { path: "time.minutes_wib", type: "number", description: "Minutes since midnight WIB, 0-1439 (08:00 = 480)" },
   { path: "time.weekday_wib", type: "number", description: "ISO weekday in WIB, 1 = Monday … 7 = Sunday" },
 ];

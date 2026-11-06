@@ -18,7 +18,8 @@
     "zod": "catalog:",
     "pino": "catalog:",
     "viem": "catalog:",
-    "@ignitra/engine": "workspace:*"
+    "@ignitra/engine": "workspace:*",
+    "@ignitra/actions": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "catalog:",

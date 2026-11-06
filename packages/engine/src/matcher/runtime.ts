@@ -28,10 +28,13 @@ export class MatcherRuntime {
   #errors = 0;
   #runsCreated = 0;
 
-  constructor(deps: { matcher: Matcher; logger: Logger; intervalMs?: number }) {
+  readonly #onRunsQueued: () => void;
+
+  constructor(deps: { matcher: Matcher; logger: Logger; intervalMs?: number; onRunsQueued?: () => void }) {
     this.#matcher = deps.matcher;
     this.#log = deps.logger;
     this.#intervalMs = deps.intervalMs ?? 1000;
+    this.#onRunsQueued = deps.onRunsQueued ?? (() => {});
   }
 
   async run(signal: AbortSignal): Promise<void> {
@@ -49,7 +52,10 @@ export class MatcherRuntime {
           wasLeader = true;
           const runs = (report.confirmed?.runs ?? 0) + (report.head?.runs ?? 0) + (report.polled?.runs ?? 0);
           this.#runsCreated += runs;
-          if (runs > 0) this.#log.info({ runs, confirmed: report.confirmed, head: report.head, polled: report.polled }, "runs queued");
+          if (runs > 0) {
+            this.#log.info({ runs, confirmed: report.confirmed, head: report.head, polled: report.polled }, "runs queued");
+            this.#onRunsQueued();
+          }
           if (report.confirmed?.behind || report.head?.behind) delay = 0;
         } else {
           if (wasLeader) this.#log.warn("lost matcher lease — standby");

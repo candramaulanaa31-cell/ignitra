@@ -36,6 +36,7 @@ const FIELDS: readonly FieldSpec[] = [
   ...CHAIN_EVIDENCE_FIELDS,
   { path: "wallet", type: "address", description: "Watched wallet" },
   { path: "asset", type: "string", description: "`native` or the token address" },
+  { path: "token.address", type: "address", description: "Token contract (null for native ETH)", nullable: true },
   { path: "token.symbol", type: "string", description: "ETH or the token symbol", nullable: true },
   { path: "token.decimals", type: "number", description: "Decimals used for the threshold", nullable: true },
   { path: "threshold", type: "decimal", description: "Threshold in token units" },

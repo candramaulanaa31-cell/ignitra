@@ -18,6 +18,7 @@ export type TriggerType = (typeof TRIGGER_TYPES)[number];
 
 export const ACTION_TYPES = [
   "WEBHOOK",
+  "TELEGRAM",
   "DISCORD",
   "WEB_PUSH",
   "EMAIL",
@@ -43,7 +44,7 @@ export const CONDITION_OPERATORS = [
 ] as const;
 export type ConditionOperator = (typeof CONDITION_OPERATORS)[number];
 
-export const CONNECTION_TYPES = ["discord", "webhook", "google", "email"] as const;
+export const CONNECTION_TYPES = ["telegram", "webhook", "discord", "google", "email"] as const;
 export type ConnectionType = (typeof CONNECTION_TYPES)[number];
 
 export const FLOW_STATUSES = ["active", "paused", "disabled"] as const;

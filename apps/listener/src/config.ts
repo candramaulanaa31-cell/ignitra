@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { CONFIRMATION_STRATEGIES, ROBINHOOD_CHAIN_ID } from "@ignitra/core";
 import { envVar, workerEnvSchema } from "@ignitra/core/server";
+import { runnerEnvShape } from "@ignitra/actions";
 
 /**
  * Listener tuning. Defaults come from measurements of Robinhood Chain mainnet
@@ -26,13 +27,17 @@ export const listenerEnvSchema = workerEnvSchema.extend({
   /** Blockscout PRO API base (chain-scoped). ABI fetching is off without a key. */
   EXPLORER_API_URL: envVar.optional(envVar.httpUrl),
   EXPLORER_API_KEY: envVar.optional(z.string().min(8)),
-  /** What this process runs: chain ingestion (sync), event → run matching (matcher), or both. */
+  /**
+   * What this process runs: chain ingestion (sync), event → run matching (matcher),
+   * run execution (runner). Default sync+matcher; add "runner" when one process must do
+   * everything (embedded PGlite, smallest VPS).
+   */
   LISTENER_ROLES: envVar.withDefault(
     z
       .string()
       .default("sync,matcher")
       .transform((v) => v.split(",").map((s) => s.trim()).filter(Boolean))
-      .pipe(z.array(z.enum(["sync", "matcher"])).min(1)),
+      .pipe(z.array(z.enum(["sync", "matcher", "runner"])).min(1)),
   ),
   MATCHER_BATCH_SIZE: envVar.withDefault(envVar.int(1, 5000).default(500)),
   /** Sampling interval of BALANCE_THRESHOLD / CONTRACT_DEPLOYED flows. */
@@ -41,6 +46,8 @@ export const listenerEnvSchema = workerEnvSchema.extend({
   MATCHER_EVALUATIONS_PER_MINUTE: envVar.withDefault(envVar.int(0, 10_000).default(20)),
   /** Auto-pause a flow when events dropped by its hourly cap reach factor × cap. */
   MATCHER_RUNAWAY_FACTOR: envVar.withDefault(envVar.int(1, 1000).default(3)),
+  // Runner settings, used when LISTENER_ROLES includes "runner" (single-process / PGlite setups).
+  ...runnerEnvShape,
 });
 
 export type ListenerEnv = z.output<typeof listenerEnvSchema>;

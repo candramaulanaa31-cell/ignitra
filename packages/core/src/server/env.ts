@@ -53,7 +53,7 @@ export const envVar = {
 
 const base64Key32 = z
   .string()
-  .regex(/^[A-Za-z0-9+/]+={0,2}$/, { message: "must be base64" })
+  .regex(/^[A-Za-z0-9+/_-]+={0,2}$/, { message: "must be base64 or base64url" })
   .refine((v) => Buffer.from(v, "base64").length === 32, { message: "must decode to exactly 32 bytes" });
 
 const keyId = z.string().regex(/^[A-Za-z0-9_-]{1,32}$/, { message: "must be 1-32 chars of [A-Za-z0-9_-]" });
@@ -110,6 +110,7 @@ export const apiEnvSchema = runtimeEnvSchema
   .extend({
     API_HOST: z.preprocess(blank, z.string().default("127.0.0.1")),
     API_PORT: z.preprocess(blank, z.coerce.number().int().min(1).max(65535).default(4000)),
+    VAPID_PUBLIC_KEY: optional(z.string()),
   });
 
 export const workerEnvSchema = runtimeEnvSchema.extend(chainEnvSchema.shape).extend(databaseEnvSchema.shape);

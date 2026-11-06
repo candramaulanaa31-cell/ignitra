@@ -4,10 +4,13 @@ import {
   newId,
   normalizeAddress,
   validateConditionFields,
+  validateTemplate,
+  type ActionRegistry,
+  type FieldSpec,
   type FlowDefinition,
   type FlowStatus,
 } from "@ignitra/core";
-import { flowVersions, flows, triggerState, users, watches, type Database, type Tx } from "@ignitra/db";
+import { connections, flowVersions, flows, triggerState, users, watches, type Database, type Tx } from "@ignitra/db";
 import type { PrepareContext, TriggerModuleRegistry } from "./types";
 
 /**
@@ -44,9 +47,13 @@ export interface FlowServiceDeps {
   readonly chainId: number;
   readonly triggers: TriggerModuleRegistry;
   readonly prepare: PrepareContext;
+  /** When present, action types / params / connections / templates are validated too. */
+  readonly actions?: ActionRegistry;
 }
 
-export async function validateFlowDefinition(input: unknown, deps: Pick<FlowServiceDeps, "triggers" | "prepare">): Promise<FlowDefinition> {
+type ValidationDeps = Pick<FlowServiceDeps, "triggers" | "prepare"> & { readonly actions?: ActionRegistry | undefined; readonly db?: Database | undefined };
+
+export async function validateFlowDefinition(input: unknown, deps: ValidationDeps, ownerId?: string): Promise<FlowDefinition> {
   const parsed = flowDefinitionSchema.safeParse(input);
   if (!parsed.success) {
     throw new FlowValidationError(parsed.error.issues.map((i) => ({ path: i.path.map(String).join("."), message: i.message })));
@@ -74,11 +81,60 @@ export async function validateFlowDefinition(input: unknown, deps: Pick<FlowServ
   if (def.settings.mode === "fast" && !module.supportsFast) {
     issues.push({ path: "settings.mode", message: `${def.trigger.type} needs confirmed data and does not support fast mode` });
   }
-  for (const issue of validateConditionFields(def.conditions, module.fields(prepared))) {
+  const triggerFields = module.fields(prepared);
+  for (const issue of validateConditionFields(def.conditions, triggerFields)) {
     issues.push({ path: `conditions.${issue.path}`, message: issue.message });
   }
+  const actions = deps.actions ? await validateActions(def, triggerFields, deps, ownerId, issues) : def.actions;
   if (issues.length > 0) throw new FlowValidationError(issues);
-  return { ...def, trigger: { type: def.trigger.type, params: prepared as Record<string, unknown> } };
+  return { ...def, trigger: { type: def.trigger.type, params: prepared as Record<string, unknown> }, actions };
+}
+
+/** Types available, params valid, connections owned and of the right type, template variables resolvable. */
+async function validateActions(
+  def: FlowDefinition,
+  triggerFields: readonly FieldSpec[],
+  deps: ValidationDeps,
+  ownerId: string | undefined,
+  issues: FlowIssue[],
+): Promise<FlowDefinition["actions"]> {
+  const registry = deps.actions as ActionRegistry;
+  const earlier = new Map<string, readonly FieldSpec[]>();
+  const out: FlowDefinition["actions"] = [];
+  for (const [i, step] of def.actions.entries()) {
+    const at = `actions.${i}`;
+    const action = registry.has(step.type) ? registry.get(step.type) : undefined;
+    if (!action) {
+      issues.push({ path: `${at}.type`, message: `${step.type} is not available yet${step.type === "DISCORD" ? " (use TELEGRAM)" : ""}` });
+      out.push(step);
+      continue;
+    }
+    const parsed = action.paramsSchema.safeParse(step.params);
+    if (!parsed.success) {
+      for (const issue of parsed.error.issues) issues.push({ path: [at, "params", ...issue.path.map(String)].join("."), message: issue.message });
+      out.push(step);
+      continue;
+    }
+    const params = parsed.data as Record<string, unknown>;
+    const connectionId = typeof params.connection_id === "string" ? params.connection_id : null;
+    if (action.connectionType && !connectionId && !action.connectionOptional) {
+      issues.push({ path: `${at}.params.connection_id`, message: `${step.type} needs a ${action.connectionType} connection` });
+    }
+    if (connectionId && deps.db && ownerId) {
+      const [conn] = await deps.db.select({ ownerId: connections.ownerId, type: connections.type }).from(connections).where(eq(connections.id, connectionId));
+      if (!conn || conn.ownerId !== ownerId) {
+        issues.push({ path: `${at}.params.connection_id`, message: `connection ${connectionId} not found` });
+      } else if (action.connectionType && conn.type !== action.connectionType) {
+        issues.push({ path: `${at}.params.connection_id`, message: `connection ${connectionId} is ${conn.type}; ${step.type} needs ${action.connectionType}` });
+      }
+    }
+    for (const t of action.templates(params)) {
+      for (const message of validateTemplate(t.template, { triggerFields, earlierSteps: earlier })) issues.push({ path: `${at}.params.${t.name}`, message });
+    }
+    earlier.set(step.step_id, action.outputFields);
+    out.push({ ...step, params });
+  }
+  return out;
 }
 
 function validateName(name: string): string {
@@ -126,7 +182,7 @@ export async function createFlow(
   deps: FlowServiceDeps,
   input: { ownerId: string; name: string; definition: unknown; activate?: boolean },
 ): Promise<CreatedFlow> {
-  const definition = await validateFlowDefinition(input.definition, deps);
+  const definition = await validateFlowDefinition(input.definition, deps, input.ownerId);
   const name = validateName(input.name);
   const flowId = newId("flow");
   const status: FlowStatus = input.activate ? "active" : "paused";
@@ -147,7 +203,9 @@ export async function createFlow(
 
 /** Writes version N+1 and makes it current. Polling-trigger state restarts from scratch. */
 export async function updateFlowDefinition(deps: FlowServiceDeps, flowId: string, input: unknown): Promise<{ version: number; definition: FlowDefinition }> {
-  const definition = await validateFlowDefinition(input, deps);
+  const [owner] = await deps.db.select({ ownerId: flows.ownerId }).from(flows).where(eq(flows.id, flowId));
+  if (!owner) throw new FlowNotFoundError(flowId);
+  const definition = await validateFlowDefinition(input, deps, owner.ownerId);
   return deps.db.transaction(async (tx) => {
     const [flow] = await tx.select().from(flows).where(eq(flows.id, flowId)).for("update");
     if (!flow) throw new FlowNotFoundError(flowId);
@@ -160,9 +218,9 @@ export async function updateFlowDefinition(deps: FlowServiceDeps, flowId: string
   });
 }
 
-export async function getCurrentDefinition(db: Database, flowId: string): Promise<{ version: number; definition: FlowDefinition; status: FlowStatus }> {
+export async function getCurrentDefinition(db: Database, flowId: string): Promise<{ version: number; definition: FlowDefinition; status: FlowStatus; ownerId: string }> {
   const [row] = await db
-    .select({ version: flows.currentVersion, status: flows.status, definition: flowVersions.definition })
+    .select({ version: flows.currentVersion, status: flows.status, ownerId: flows.ownerId, definition: flowVersions.definition })
     .from(flows)
     .innerJoin(flowVersions, and(eq(flowVersions.flowId, flows.id), eq(flowVersions.version, flows.currentVersion)))
     .where(eq(flows.id, flowId));
@@ -177,7 +235,7 @@ export async function getCurrentDefinition(db: Database, flowId: string): Promis
  */
 export async function setFlowStatus(deps: FlowServiceDeps, flowId: string, status: FlowStatus, reason: string | null = null): Promise<void> {
   const current = await getCurrentDefinition(deps.db, flowId);
-  if (status === "active") await validateFlowDefinition(current.definition, deps);
+  if (status === "active") await validateFlowDefinition(current.definition, deps, current.ownerId);
   await deps.db.transaction(async (tx) => {
     const becomingActive = status === "active" && current.status !== "active";
     await tx

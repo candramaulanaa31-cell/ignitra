@@ -3,3 +3,4 @@ export * from "./env";
 export * from "./envelope";
 export * from "./logger";
 export * from "./service";
+export * from "./health";

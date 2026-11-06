@@ -1,21 +1,23 @@
 import { hostname } from "node:os";
 import { randomBytes } from "node:crypto";
 import { redactUrl } from "@ignitra/core";
-import { chainConfigFromEnv, createLogger, loadServiceEnv, runService } from "@ignitra/core/server";
+import { chainConfigFromEnv, closeServer, createLogger, loadServiceEnv, runService, startHealthServer } from "@ignitra/core/server";
+import { createRunnerFromEnv, type RunnerRuntime } from "@ignitra/actions";
 import { AbiRegistry, BlockscoutAbiFetcher, EventDecoder, createRpcChainReader } from "@ignitra/chain";
 import { createDb } from "@ignitra/db";
 import { Matcher, MatcherRuntime, TokenInfo, createTriggerModules } from "@ignitra/engine";
 import { explorerApiUrl, listenerEnvSchema } from "./config";
 import { HeadWatcher } from "./head";
-import { ListenerRuntime, startHealthServer } from "./runtime";
+import { ListenerRuntime } from "./runtime";
 import { DbAbiStore, ListenerStore } from "./store";
 import { ChainSync } from "./sync";
 
 /**
- * Chain-side process. Roles (LISTENER_ROLES, default both):
+ * Chain-side process. Roles (LISTENER_ROLES, default sync,matcher):
  *   sync     — ingest logs for watched contracts, confirm, handle reorgs
  *   matcher  — turn confirmed (and fast-mode pending) events into queued runs
- * Each role holds its own lease, so they can later run as separate processes.
+ *   runner   — execute runs (normally apps/runner; here for single-process setups)
+ * Each role holds its own lease / row locks, so they can run as separate processes.
  */
 const env = loadServiceEnv(listenerEnvSchema);
 const logger = createLogger("listener", env.LOG_LEVEL);
@@ -38,6 +40,9 @@ await runService(logger, async () => {
   const controller = new AbortController();
   const loops: Promise<void>[] = [];
 
+  // ---- runner (optional, single-process mode) -------------------------------
+  const runner: RunnerRuntime | null = roles.has("runner") ? createRunnerFromEnv(env, { db: db.db, logger: logger.child({ component: "runner" }), owner }) : null;
+
   // ---- matcher -------------------------------------------------------------
   let matcherRuntime: MatcherRuntime | null = null;
   if (roles.has("matcher")) {
@@ -56,7 +61,12 @@ await runService(logger, async () => {
         runawayFactor: env.MATCHER_RUNAWAY_FACTOR,
       },
     });
-    matcherRuntime = new MatcherRuntime({ matcher, logger: logger.child({ component: "matcher" }) });
+    matcherRuntime = new MatcherRuntime({
+      matcher,
+      logger: logger.child({ component: "matcher" }),
+      // In-process runner: start executing new runs immediately instead of at its next poll.
+      onRunsQueued: () => runner?.wakeup.notify(),
+    });
   }
 
   // ---- sync ----------------------------------------------------------------
@@ -108,8 +118,9 @@ await runService(logger, async () => {
     health() {
       const sync = syncRuntime?.health() ?? null;
       const matcher = matcherRuntime?.health() ?? null;
-      const degraded = sync?.status === "degraded" || matcher?.status === "degraded";
-      return { status: degraded ? "degraded" : (sync?.status ?? matcher?.status ?? "ok"), roles: [...roles], sync, matcher };
+      const execution = runner?.health() ?? null;
+      const degraded = [sync, matcher, execution].some((h) => h?.status === "degraded");
+      return { status: degraded ? "degraded" : (sync?.status ?? matcher?.status ?? execution?.status ?? "ok"), roles: [...roles], sync, matcher, runner: execution };
     },
   };
   const server = env.LISTENER_HEALTH_PORT > 0 ? await startHealthServer(health, env.LISTENER_HEALTH_HOST, env.LISTENER_HEALTH_PORT) : null;
@@ -133,15 +144,17 @@ await runService(logger, async () => {
     loops.push(syncRuntime.run(controller.signal));
   }
   if (matcherRuntime) loops.push(matcherRuntime.run(controller.signal));
+  if (runner) loops.push(runner.run(controller.signal));
 
   return async () => {
     controller.abort();
     head?.stop();
     matcherRuntime?.wakeup.notify();
+    runner?.wakeup.notify();
     await Promise.all(loops);
     await abis?.idle();
     await store?.releaseLease().catch(() => {});
-    await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
+    await closeServer(server);
     await db.close();
   };
 });

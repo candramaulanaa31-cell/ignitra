@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, gt, inArray, max, ne, sql } from "drizzle-orm";
-import type { EvaluationOutcome, FlowDefinition } from "@ignitra/core";
+import { newId, type EvaluationOutcome, type FlowDefinition } from "@ignitra/core";
 import {
   Lease,
   chainCursors,
@@ -9,6 +9,7 @@ import {
   flowStats,
   flowVersions,
   flows,
+  ownerNotifications,
   runs,
   triggerState,
   type ChainEvent,
@@ -256,10 +257,13 @@ export class MatcherStore {
         });
     }
     for (const p of batch.pauses) {
-      await tx
+      const paused = await tx
         .update(flows)
         .set({ status: "paused", statusReason: p.reason, updatedAt: sql`now()` })
-        .where(and(eq(flows.id, p.flowId), eq(flows.status, "active")));
+        .where(and(eq(flows.id, p.flowId), eq(flows.status, "active")))
+        .returning({ ownerId: flows.ownerId });
+      const owner = paused[0]?.ownerId;
+      if (owner) await tx.insert(ownerNotifications).values({ id: newId("notification"), userId: owner, flowId: p.flowId, kind: "flow_auto_paused", message: p.reason });
     }
     return { inserted, restored };
   }
@@ -319,7 +323,10 @@ export class MatcherStore {
           moved += rows.length;
           continue;
         }
-        const wasQueued = sql`${runs.status} = 'queued'`;
+        // Cancel only runs that never executed a step. A run that already delivered
+        // something (and is backing off) stays queued: the runner finishes it honestly
+        // (delivered steps kept, the rest skipped) and sends run.reverted notices.
+        const wasQueued = sql`${runs.status} = 'queued' and not exists (select 1 from run_steps rs where rs.run_id = ${runs.id})`;
         const rows = await tx
           .update(runs)
           .set({

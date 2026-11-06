@@ -1,30 +1,42 @@
-import { createActionRegistry } from "@ignitra/core";
-import { createLogger, loadServiceEnv, runService, workerEnvSchema } from "@ignitra/core/server";
+import { hostname } from "node:os";
+import { randomBytes } from "node:crypto";
+import { closeServer, createLogger, loadServiceEnv, runService, startHealthServer } from "@ignitra/core/server";
 import { createDb } from "@ignitra/db";
+import { createRunnerFromEnv, runnerEnvSchema } from "@ignitra/actions";
 
 /**
- * Flow runner. Phase 1: boots, connects to the DB and idles. Phase 4 adds
- * the Postgres job queue, workers, retries, templating and MVP actions.
+ * Flow runner: executes queued runs (WEBHOOK, TELEGRAM, WEB_PUSH) with
+ * retries, step traces and auto-pause. Any number of runner processes can
+ * share one database (FOR UPDATE SKIP LOCKED + leases).
+ *
+ * With embedded PGlite (one process only) run the runner inside the listener
+ * instead: LISTENER_ROLES=sync,matcher,runner.
  */
-const env = loadServiceEnv(workerEnvSchema);
+const env = loadServiceEnv(runnerEnvSchema);
 const logger = createLogger("runner", env.LOG_LEVEL);
 
 await runService(logger, async () => {
-  const actions = createActionRegistry();
   const db = await createDb(env.DATABASE_URL, {
     applicationName: "ignitra-runner",
     onPoolError: (err) => logger.warn({ err }, "db pool error"),
   });
-  await db.ping();
+  if (db.driver === "pglite") await db.migrate();
 
+  const owner = `${hostname()}:${process.pid}:${randomBytes(3).toString("hex")}`;
+  const runner = createRunnerFromEnv(env, { db: db.db, logger, owner });
+  const health = env.RUNNER_HEALTH_PORT > 0 ? await startHealthServer(runner, env.RUNNER_HEALTH_HOST, env.RUNNER_HEALTH_PORT) : null;
   logger.info(
-    { db: db.driver, actionsRegistered: actions.size },
-    "runner started (phase 1 skeleton: no job execution yet)",
+    { owner, concurrency: env.RUNNER_CONCURRENCY, health: health ? `http://${env.RUNNER_HEALTH_HOST}:${env.RUNNER_HEALTH_PORT}/health` : "disabled", db: db.driver },
+    "runner starting",
   );
 
-  const heartbeat = setInterval(() => logger.debug("heartbeat"), 60_000);
+  const controller = new AbortController();
+  const loop = runner.run(controller.signal);
   return async () => {
-    clearInterval(heartbeat);
+    controller.abort();
+    runner.wakeup.notify();
+    await loop; // drains in-flight runs
+    await closeServer(health);
     await db.close();
   };
 });

@@ -26,6 +26,8 @@ import {
   updateFlowDefinition,
   type FlowServiceDeps,
 } from "@ignitra/engine";
+import { createActionModules } from "@ignitra/actions";
+import { DELIVERY_USAGE, deliveryCommand } from "./cli-delivery";
 import { explorerApiUrl, listenerEnvSchema } from "./config";
 import { WatchFilter } from "./filter";
 import { DbAbiStore, ListenerStore, addWatch } from "./store";
@@ -53,9 +55,27 @@ const USAGE = `usage: pnpm ops <command>
   runs [--flow <id>] [--limit n]
   evals --flow <id> [--limit n]
   watch add <address> [event-signature|topic0] [--fast] [--note ..] | watch list | watch rm <id>
-  status | events [--limit n] | stats | verify <from-block> <to-block>`;
+  status | events [--limit n] | stats | verify <from-block> <to-block>
+${DELIVERY_USAGE}`;
+
+// Telegram group/channel ids are negative ("-1001234567890"): parseArgs would read them as
+// flags, so join "--chat -100…" / "--thread -…" into "--chat=-100…" first.
+const NEGATIVE_VALUE_FLAGS = /^--(chat|thread)$/;
+const NEGATIVE_NUMBER = /^-\d+$/;
+const argv: string[] = [];
+for (let i = 2; i < process.argv.length; i++) {
+  const arg = process.argv[i] ?? "";
+  const next = process.argv[i + 1] ?? "";
+  if (NEGATIVE_VALUE_FLAGS.test(arg) && NEGATIVE_NUMBER.test(next)) {
+    argv.push(`${arg}=${next}`);
+    i++;
+  } else {
+    argv.push(arg);
+  }
+}
 
 const { values, positionals } = parseArgs({
+  args: argv,
   allowPositionals: true,
   options: {
     fast: { type: "boolean", default: false },
@@ -66,6 +86,13 @@ const { values, positionals } = parseArgs({
     reason: { type: "string" },
     flow: { type: "string" },
     limit: { type: "string", default: "20" },
+    label: { type: "string" },
+    token: { type: "string" },
+    chat: { type: "string" },
+    thread: { type: "string" },
+    url: { type: "string" },
+    file: { type: "string" },
+    test: { type: "boolean", default: false },
   },
 });
 
@@ -85,7 +112,7 @@ function flowDeps(): FlowServiceDeps {
     fetcher: apiUrl && env.EXPLORER_API_KEY ? new BlockscoutAbiFetcher({ baseUrl: apiUrl, apiKey: env.EXPLORER_API_KEY }) : null,
     reader,
   });
-  return { db, chainId, triggers: createTriggerModules(), prepare: { abis } };
+  return { db, chainId, triggers: createTriggerModules(), actions: createActionModules(env.TELEGRAM_API_URL ? { telegramApiBase: env.TELEGRAM_API_URL } : {}), prepare: { abis } };
 }
 
 function readJson(path: string | undefined): Record<string, unknown> {
@@ -264,7 +291,7 @@ try {
         .join("; ");
       console.log([e.createdAt.toISOString().slice(11, 19), e.outcome.padEnd(17), `blk ${String((e.triggerEvent as { block_number?: number }).block_number)}`, e.reason ?? failed].join("  "));
     }
-  } else if (!cmd || !(await chainCommand(cmd, sub, rest))) {
+  } else if (!cmd || !((await deliveryCommand(db, env, values, cmd, sub, rest, limit)) || (await chainCommand(cmd, sub, rest)))) {
     console.error(USAGE);
     process.exitCode = 1;
   }

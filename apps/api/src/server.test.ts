@@ -103,6 +103,20 @@ describe("GET /v1/triggers", () => {
   });
 });
 
+describe("GET /v1/actions and push key", () => {
+  it("lists the MVP actions (Telegram, not Discord) with schemas and output fields", async () => {
+    const app = await buildServer({ db, chain, logger, version: "0.1.0", vapidPublicKey: "BPub" });
+    const data = (await app.inject({ method: "GET", url: "/v1/actions" })).json().data as Array<{ type: string; connection_type: string | null; params_schema: { properties: Record<string, unknown> }; output_fields: Array<{ path: string }> }>;
+    expect(data.map((a) => a.type)).toEqual(["WEBHOOK", "TELEGRAM", "WEB_PUSH"]);
+    const telegram = data.find((a) => a.type === "TELEGRAM");
+    expect(telegram?.connection_type).toBe("telegram");
+    expect(Object.keys(telegram?.params_schema.properties ?? {})).toEqual(["connection_id", "text", "parse_mode", "disable_link_preview", "silent"]);
+    expect(telegram?.output_fields.map((f) => f.path)).toEqual(["message_id", "chat_id"]);
+    expect((await app.inject({ method: "GET", url: "/v1/push/vapid-public-key" })).json()).toEqual({ public_key: "BPub" });
+    await app.close();
+  });
+});
+
 describe("errors", () => {
   it("returns a JSON 404 for unknown routes", async () => {
     const app = await buildServer({ db, chain, logger, version: "0.1.0" });

@@ -42,6 +42,8 @@ describe("env parsing", () => {
     expect(env.ENCRYPTION_KEY_ID).toBe("k1");
     expect(env.ENCRYPTION_KEYS_PREVIOUS?.map((p) => p.kid)).toEqual(["k0", "k00"]);
 
+    // pnpm gen:secret emits base64url (no "/" — Git Bash rewrites values starting with "/" as paths)
+    expect(parseEnv(encryptionEnvSchema, { ENCRYPTION_KEY: randomBytes(32).toString("base64url") }).ENCRYPTION_KEY).toHaveLength(43);
     expect(() => parseEnv(encryptionEnvSchema, {})).toThrow(/ENCRYPTION_KEY/);
     expect(() => parseEnv(encryptionEnvSchema, { ENCRYPTION_KEY: randomBytes(16).toString("base64") })).toThrow(
       /32 bytes/,

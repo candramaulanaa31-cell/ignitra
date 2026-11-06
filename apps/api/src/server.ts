@@ -4,6 +4,8 @@ import type { Logger } from "@ignitra/core/server";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { createTriggerModules, type TriggerModuleRegistry } from "@ignitra/engine";
+import { createActionModules } from "@ignitra/actions";
+import type { ActionRegistry } from "@ignitra/core";
 import { chainSyncStatus, type DbHandle } from "@ignitra/db";
 
 export interface ServerDeps {
@@ -16,6 +18,22 @@ export interface ServerDeps {
   /** Listener heartbeat older than this is reported as stale. */
   readonly listenerStaleMs?: number;
   readonly triggers?: TriggerModuleRegistry;
+  readonly actions?: ActionRegistry;
+  /** Browsers need it to subscribe to Web Push (null when push is not configured). */
+  readonly vapidPublicKey?: string | null;
+}
+
+/** Public action catalog: params as JSON Schema, output fields for {{steps.<id>.*}}. */
+function actionCatalog(registry: ActionRegistry) {
+  return registry.list().map((a) => ({
+    type: a.type,
+    label: a.label,
+    description: a.description,
+    connection_type: a.connectionType,
+    connection_optional: a.connectionOptional ?? false,
+    params_schema: z.toJSONSchema(a.paramsSchema, { io: "input", unrepresentable: "any" }),
+    output_fields: a.outputFields,
+  }));
 }
 
 /** Public trigger catalog (builder + docs): params as JSON Schema, payload fields for conditions/templates. */
@@ -127,6 +145,9 @@ export async function buildServer(deps: ServerDeps) {
 
   const catalog = triggerCatalog(deps.triggers ?? createTriggerModules());
   app.get("/v1/triggers", async () => ({ data: catalog }));
+  const actions = actionCatalog(deps.actions ?? createActionModules());
+  app.get("/v1/actions", async () => ({ data: actions }));
+  app.get("/v1/push/vapid-public-key", async () => ({ public_key: deps.vapidPublicKey ?? null }));
 
   app.setNotFoundHandler((req, reply) => {
     const body: ApiErrorBody = { error: { code: "not_found", message: `${req.method} ${req.url} not found` } };

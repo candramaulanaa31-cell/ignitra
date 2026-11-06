@@ -8,9 +8,9 @@ listener ──▶ trigger + condition engine ──▶ runs (queued) ──▶ 
  (chain)        (match, enrich, evaluate)     (unique key)     (retry)     (Discord, webhook, push…)
 ```
 
-> **Status: Phase 3 — Triggers & conditions.** Chain events become queued runs for
-> matching flows, with full evidence and per-condition traces. Executing runs (actions)
-> arrives in Phase 4.
+> **Status: Phase 4 — Runner & actions.** On-chain events end in delivered actions:
+> **Telegram**, signed **webhooks** and **Web Push** — with retries, full step traces,
+> reorg notices and auto-pause. Accounts / SIWE arrive in Phase 5.
 
 ## Layout
 
@@ -19,8 +19,9 @@ listener ──▶ trigger + condition engine ──▶ runs (queued) ──▶ 
 | `apps/api` | Fastify HTTP API. Phase 1: `GET /health`, JSON errors. |
 | `apps/web` | Next.js app (landing + `/app` placeholder). |
 | `apps/listener` | Chain process: ingestion (sync) + matcher, health endpoint, operator CLI (`pnpm ops`). |
-| `apps/runner` | Flow runner process. Phase 1: boots, connects DB. |
+| `apps/runner` | Flow runner: executes queued runs (concurrency, retries, traces, auto-pause). |
 | `packages/core` | Domain core. `@ignitra/core` is isomorphic; `@ignitra/core/server` is Node-only. |
+| `packages/actions` | SSRF-safe HTTP, WEBHOOK / TELEGRAM / WEB_PUSH modules, connections, Postgres run queue, executor. |
 | `packages/engine` | Trigger modules, token enrichment, condition evaluation glue, flow service, matcher (events → runs). |
 | `packages/chain` | RPC reader with failover, built-in ABIs, event decoder, explorer ABI registry. Test doubles under `@ignitra/chain/testing`. |
 | `packages/db` | Drizzle schema, SQL migrations, driver-agnostic client (Postgres or PGlite). |
@@ -192,6 +193,78 @@ Validated live on mainnet (USDG, ~2,000 transfers in 90 s):
 | Native balance crossing on a bot wallet | Fired once |
 | NEW_HOLDER, checked on-chain | Every checkable run held a balance at the end of its block |
 
+## Delivering actions (runner)
+
+```
+runs (queued) ──claim (FOR UPDATE SKIP LOCKED, lease)──▶ executor ──▶ step 1 ──▶ step 2 ──▶ …
+                                                          │ retryable failure → back off (10 s, 30 s, 90 s, … · Retry-After)
+                                                          │ permanent failure → next steps still run → run "partial"
+                                                          └ trace per attempt in run_steps (request / response summaries, never secrets)
+```
+
+| Action | What it does |
+|---|---|
+| `TELEGRAM` | A bot message to a chat, group, topic or channel. HTML templates are supported, and every substituted value is escaped, so on-chain data can't inject markup. |
+| `WEBHOOK` | A signed JSON envelope (`run.action`) sent to your server. |
+| `WEB_PUSH` | A notification to the flow owner's browsers or installed PWA (VAPID, aes128gcm). |
+
+**Telegram setup:**
+
+1. Create a bot with @BotFather.
+2. Add it to the group or channel (as admin for channels).
+3. Register the destination:
+
+   ```bash
+   TELEGRAM_BOT_TOKEN=123:ABC… pnpm ops connection add telegram --owner 0x… --chat -1001234567890 --test
+   ```
+
+The token is verified (`getMe`, `getChat`) and stored encrypted. It is never returned and never written to traces.
+
+**Webhooks** carry:
+
+- `X-Ignitra-Signature: v1=<HMAC-SHA256(secret, "<timestamp>.<raw body>")>`
+- `X-Ignitra-Timestamp`
+- `X-Ignitra-Idempotency-Key`: `<run key>:<step id>`, the same value on every retry
+
+Inline-URL webhooks are signed with your per-owner secret (`pnpm ops webhook secret --owner 0x…`, derived from `WEBHOOK_SIGNING_SECRET`). Connection webhooks get their own secret, shown once at creation.
+
+If a fast-mode run was delivered and its event is later reorged out, the receiver also gets a signed `run.reverted`.
+
+**Templates** (pure, no code execution):
+
+- Syntax: `{{trigger.amount_formatted}}`, `{{steps.notify.message_id}}`, `{{now_wib}}`.
+- Filters: `default: "…"`, `upper`, `lower`, `short`, `json`, `url`, `truncate: N`.
+- Unknown variables are rejected when the flow is saved, using the trigger's field catalog and earlier steps' outputs.
+
+**Safety:**
+
+- Every outbound request goes through the SSRF guard. Private, loopback, link-local, metadata and reserved ranges are blocked. Each hostname is resolved and **pinned**, so DNS rebinding can't redirect it. Redirects are never followed.
+- `OUTBOUND_ALLOW_PRIVATE=true` is for local development only.
+
+**Reliability:**
+
+- Workers that die mid-run lose their lease, and another worker resumes the run. Completed steps are never re-sent.
+- A heartbeat keeps the lease alive during long steps.
+- Pausing a flow, or reverting its event, stops pending steps while delivered ones keep their real result.
+- After `RUNNER_AUTOPAUSE_FAILURES` consecutive failed runs (default 5), the flow is **auto-paused** and the owner is notified.
+
+**Running the runner:**
+
+- `pnpm dev:runner` starts a separate process. Several runners can share one Postgres.
+- With embedded PGlite, run everything in one process: `LISTENER_ROLES=sync,matcher,runner pnpm dev:listener`.
+- `pnpm gen:secret` and `pnpm gen:vapid` generate the keys.
+- `pnpm ops run show <run_id>` prints the full trace.
+
+Validated live on mainnet (USDG, about 80 s, all three stages in one process, independent receiver):
+
+| Check | Result |
+|---|---|
+| Signed webhooks | 195 delivered: 174 inline + 21 via connection, **all signatures valid** |
+| Duplicates | 0 idempotency keys repeated |
+| Telegram | 153 messages rendered correctly |
+| Cross-check | Two flows on the same NEW_HOLDER trigger delivered identical counts |
+| Latency, block → receiver | p50 6.7 s, p95 17 s (the tail is public-RPC 429 backoff) |
+
 ## Scripts
 
 | Command | |
@@ -202,7 +275,9 @@ Validated live on mainnet (USDG, ~2,000 transfers in 90 s):
 | `pnpm build` | production build of the web app |
 | `pnpm dev` | all apps in parallel (needs real Postgres) |
 | `pnpm dev:listener` | chain listener |
-| `pnpm ops …` | flows, runs, evaluations, watches, sync status, ingestion verify |
+| `pnpm dev:runner` | flow runner |
+| `pnpm gen:secret` / `pnpm gen:vapid` | secrets (base64url) / Web Push VAPID keys |
+| `pnpm ops …` | flows, runs, traces, evaluations, connections, push, watches, sync status, verify |
 
 ## Notes
 
@@ -215,7 +290,7 @@ Validated live on mainnet (USDG, ~2,000 transfers in 90 s):
 1. **Foundation** ✅
 2. **Chain listener** ✅ blocks, logs, ABI registry, decoding, checkpoints, confirmations, reorgs
 3. **Trigger and condition engine** ✅ five chain triggers, conditions, matcher, idempotent runs, runaway protection
-4. Flow runner + WEBHOOK / DISCORD / WEB_PUSH
+4. **Flow runner** ✅ WEBHOOK / TELEGRAM (replaces Discord) / WEB_PUSH, retries, traces, SSRF guard, auto-pause
 5. SIWE, connections, schedule, chain read, plan limits
 6. Builder UI + email / Google Sheets / HTTP
 7. Templates + public surface

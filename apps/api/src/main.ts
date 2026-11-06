@@ -12,7 +12,7 @@ await runService(logger, async () => {
     applicationName: "ignitra-api",
     onPoolError: (err) => logger.warn({ err }, "db pool error"),
   });
-  const app = await buildServer({ db, chain, logger, version: pkg.version });
+  const app = await buildServer({ db, chain, logger, version: pkg.version, vapidPublicKey: env.VAPID_PUBLIC_KEY ?? null });
   try {
     // Embedded PGlite is a dev convenience: migrate on start. Real Postgres is
     // migrated explicitly (`pnpm db:migrate`) as a deploy step.

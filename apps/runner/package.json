@@ -9,6 +9,7 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@ignitra/actions": "workspace:*",
     "@ignitra/core": "workspace:*",
     "@ignitra/db": "workspace:*"
   },
