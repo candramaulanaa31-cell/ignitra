@@ -5,12 +5,12 @@ import { createDb } from "@ignitra/db";
 import { createRunnerFromEnv, runnerEnvSchema } from "@ignitra/actions";
 
 /**
- * Flow runner: executes queued runs (WEBHOOK, TELEGRAM, WEB_PUSH) with
+ * Flow runner: executes queued runs (WEBHOOK, TELEGRAM, WEB_PUSH, CHAIN_READ) with
  * retries, step traces and auto-pause. Any number of runner processes can
  * share one database (FOR UPDATE SKIP LOCKED + leases).
  *
  * With embedded PGlite (one process only) run the runner inside the listener
- * instead: LISTENER_ROLES=sync,matcher,runner.
+ * instead: LISTENER_ROLES=sync,matcher,runner (add ",api" for the HTTP API).
  */
 const env = loadServiceEnv(runnerEnvSchema);
 const logger = createLogger("runner", env.LOG_LEVEL);

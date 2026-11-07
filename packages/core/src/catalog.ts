@@ -92,7 +92,9 @@ export type AbiStatus = (typeof ABI_STATUSES)[number];
  * flow_evaluations so users can answer "why didn't my flow run?".
  *   conditions_failed — conditions evaluated false (per-condition results kept)
  *   rate_limited      — over settings.max_runs_per_hour
+ *   plan_limited      — the owner's plan has no runs left this month
  *   undetermined      — the trigger could not be decided (e.g. pruned historical state)
+ *   missed            — scheduled times that passed while the scheduler was not running
  */
-export const EVALUATION_OUTCOMES = ["conditions_failed", "rate_limited", "undetermined"] as const;
+export const EVALUATION_OUTCOMES = ["conditions_failed", "rate_limited", "plan_limited", "undetermined", "missed"] as const;
 export type EvaluationOutcome = (typeof EVALUATION_OUTCOMES)[number];

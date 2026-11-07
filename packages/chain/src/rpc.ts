@@ -155,6 +155,12 @@ export interface RpcPoolOptions {
   /** After a failure, skip the endpoint for this long (unless every endpoint is cooling down). */
   cooldownMs?: number;
   now?: () => number;
+  /**
+   * Verify the chain id before the first request (once; retried after a failure).
+   * Services that do not verify at startup set this, so a misconfigured RPC URL can
+   * never answer reads for another chain.
+   */
+  expectedChainId?: number;
 }
 
 export class RpcPool {
@@ -162,12 +168,15 @@ export class RpcPool {
   readonly #stats = new Map<string, MutableStats>();
   readonly #cooldownMs: number;
   readonly #now: () => number;
+  readonly #expectedChainId: number | null;
+  #verified: Promise<void> | null = null;
 
   constructor(endpoints: readonly RpcEndpoint[], opts: RpcPoolOptions = {}) {
     if (endpoints.length === 0) throw new Error("RpcPool needs at least one endpoint");
     this.#endpoints = [...endpoints];
     this.#cooldownMs = opts.cooldownMs ?? 30_000;
     this.#now = opts.now ?? Date.now;
+    this.#expectedChainId = opts.expectedChainId ?? null;
     for (const e of endpoints) {
       this.#stats.set(e.name, {
         requests: 0,
@@ -192,6 +201,7 @@ export class RpcPool {
   }
 
   async request<T = unknown>(method: string, params: readonly unknown[] = []): Promise<T> {
+    if (this.#expectedChainId !== null && method !== "eth_chainId") await this.#ensureChain(this.#expectedChainId);
     const now = this.#now();
     const ready = this.#endpoints.filter((e) => this.#stat(e.name).cooldownUntil <= now);
     const order = ready.length > 0 ? ready : this.#endpoints;
@@ -224,6 +234,17 @@ export class RpcPool {
       }
     }
     throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
+
+  #ensureChain(expected: number): Promise<void> {
+    this.#verified ??= this.verifyChainId(expected).then(
+      () => undefined,
+      (err: unknown) => {
+        this.#verified = null; // not verified: the next request tries again
+        throw err;
+      },
+    );
+    return this.#verified;
   }
 
   /**
@@ -415,10 +436,15 @@ export class RpcChainReader implements ChainReader {
 
 export function createRpcChainReader(
   urls: { primary: string; fallback?: string | null },
-  opts: { timeoutMs?: number; cooldownMs?: number; fetch?: FetchFn } = {},
+  opts: { timeoutMs?: number; cooldownMs?: number; fetch?: FetchFn; expectedChainId?: number } = {},
 ): RpcChainReader {
   const endpointOpts = { ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}), ...(opts.fetch ? { fetch: opts.fetch } : {}) };
   const endpoints: RpcEndpoint[] = [new HttpJsonRpcEndpoint("primary", urls.primary, endpointOpts)];
   if (urls.fallback) endpoints.push(new HttpJsonRpcEndpoint("fallback", urls.fallback, endpointOpts));
-  return new RpcChainReader(new RpcPool(endpoints, opts.cooldownMs ? { cooldownMs: opts.cooldownMs } : {}));
+  return new RpcChainReader(
+    new RpcPool(endpoints, {
+      ...(opts.cooldownMs ? { cooldownMs: opts.cooldownMs } : {}),
+      ...(opts.expectedChainId !== undefined ? { expectedChainId: opts.expectedChainId } : {}),
+    }),
+  );
 }

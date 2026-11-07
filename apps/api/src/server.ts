@@ -1,12 +1,20 @@
-import Fastify, { type FastifyError } from "fastify";
-import type { ChainConfig } from "@ignitra/core";
-import type { Logger } from "@ignitra/core/server";
+import Fastify, { type FastifyBaseLogger, type FastifyError } from "fastify";
+import type { ActionRegistry, ChainConfig, SafeHttpClient } from "@ignitra/core";
+import type { Keyring, Logger } from "@ignitra/core/server";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
-import { createTriggerModules, type TriggerModuleRegistry } from "@ignitra/engine";
-import { createActionModules } from "@ignitra/actions";
-import type { ActionRegistry } from "@ignitra/core";
+import type { AbiRegistry, ChainReader } from "@ignitra/chain";
+import { FlowNotFoundError, FlowValidationError, PlanLimitError, createTriggerModules, type TriggerModuleRegistry } from "@ignitra/engine";
+import { createActionModules, createSafeHttp } from "@ignitra/actions";
 import { chainSyncStatus, type DbHandle } from "@ignitra/db";
+import { authenticate, type AuthOptions } from "./auth";
+import type { ApiContext } from "./context";
+import { ApiError } from "./http";
+import { registerAccountRoutes } from "./routes/account";
+import { registerAuthRoutes } from "./routes/auth";
+import { registerConnectionRoutes } from "./routes/connections";
+import { registerFlowRoutes } from "./routes/flows";
+import { registerHookRoutes } from "./routes/hooks";
 
 export interface ServerDeps {
   readonly db: DbHandle;
@@ -21,6 +29,26 @@ export interface ServerDeps {
   readonly actions?: ActionRegistry;
   /** Browsers need it to subscribe to Web Push (null when push is not configured). */
   readonly vapidPublicKey?: string | null;
+  // ---- accounts & flows API (Phase 5) ----
+  /** Web app origins allowed to call the API with credentials (CORS + CSRF check). */
+  readonly corsOrigins?: readonly string[];
+  readonly auth?: Partial<AuthOptions>;
+  /** Public base URL of this API (inbound hook URLs). */
+  readonly publicUrl?: string;
+  readonly reader?: ChainReader | null;
+  readonly abis?: AbiRegistry | null;
+  readonly keyring?: Keyring | null;
+  readonly webhookMaster?: string | null;
+  readonly http?: SafeHttpClient;
+  readonly allowPrivateOutbound?: boolean;
+  readonly telegramApiBase?: string;
+  readonly inboundRatePerMinute?: number;
+  readonly inboundDailyLimit?: number;
+  /** Behind a reverse proxy: take the client IP from X-Forwarded-For (rate limits). */
+  readonly trustProxy?: boolean;
+  /** Called after an inbound webhook request is stored (single process: wake the matcher). */
+  readonly onInboundEvent?: () => void;
+  readonly now?: () => number;
 }
 
 /** Public action catalog: params as JSON Schema, output fields for {{steps.<id>.*}}. */
@@ -48,6 +76,7 @@ function triggerCatalog(registry: TriggerModuleRegistry) {
     return {
       type: m.type,
       kind: m.kind,
+      source: m.source,
       label: m.label,
       description: m.description,
       supports_fast: m.supportsFast,
@@ -71,7 +100,7 @@ export type ListenerHealth =
     };
 
 export interface ApiErrorBody {
-  error: { code: string; message: string };
+  error: { code: string; message: string; [k: string]: unknown };
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
@@ -112,12 +141,94 @@ async function readListener(deps: ServerDeps): Promise<ListenerHealth> {
   }
 }
 
+const DEFAULT_ORIGINS = ["http://localhost:3000"];
+
+function context(deps: ServerDeps, triggers: TriggerModuleRegistry, actions: ActionRegistry): ApiContext {
+  const corsOrigins = deps.corsOrigins ?? DEFAULT_ORIGINS;
+  const publicUrl = (deps.publicUrl ?? "http://127.0.0.1:4000").replace(/\/+$/, "");
+  const allowPrivateOutbound = deps.allowPrivateOutbound ?? false;
+  return {
+    db: deps.db.db,
+    chain: deps.chain,
+    logger: deps.logger,
+    triggers,
+    actions,
+    flowDeps: { db: deps.db.db, chainId: deps.chain.id, triggers, actions, prepare: { abis: deps.abis ?? null } },
+    reader: deps.reader ?? null,
+    keyring: deps.keyring ?? null,
+    webhookMaster: deps.webhookMaster ?? null,
+    http: deps.http ?? createSafeHttp({ allowPrivate: allowPrivateOutbound }),
+    allowPrivateOutbound,
+    telegramApiBase: deps.telegramApiBase,
+    publicUrl,
+    corsOrigins,
+    auth: {
+      domains: deps.auth?.domains ?? corsOrigins.map((o) => new URL(o).host),
+      sessionTtlMs: deps.auth?.sessionTtlMs ?? 7 * 24 * 3600_000,
+      secureCookies: deps.auth?.secureCookies ?? publicUrl.startsWith("https://"),
+    },
+    inboundRatePerMinute: deps.inboundRatePerMinute ?? 60,
+    inboundDailyLimit: deps.inboundDailyLimit ?? 5000,
+    vapidPublicKey: deps.vapidPublicKey ?? null,
+    onInboundEvent: deps.onInboundEvent ?? (() => {}),
+    now: deps.now ?? Date.now,
+  };
+}
+
 export async function buildServer(deps: ServerDeps) {
   const app = Fastify({
-    loggerInstance: deps.logger,
+    // pino is a FastifyBaseLogger; typing it as such keeps route plugins on the default instance type.
+    loggerInstance: deps.logger as FastifyBaseLogger,
     bodyLimit: 1024 * 1024,
     // Behind a reverse proxy in production; set explicitly when deploying.
-    trustProxy: false,
+    trustProxy: deps.trustProxy ?? false,
+  });
+  const triggers = deps.triggers ?? createTriggerModules();
+  const actions = deps.actions ?? createActionModules(deps.telegramApiBase ? { telegramApiBase: deps.telegramApiBase } : {});
+  const ctx = context(deps, triggers, actions);
+  app.decorateRequest("auth", null);
+
+  // Set before any plugin is registered: child scopes inherit the handlers at creation.
+  app.setNotFoundHandler((req, reply) => {
+    const body: ApiErrorBody = { error: { code: "not_found", message: `${req.method} ${req.url.split("?")[0]} not found` } };
+    return reply.code(404).send(body);
+  });
+
+  app.setErrorHandler((err: FastifyError, req, reply) => {
+    if (err instanceof ApiError) return reply.code(err.status).send({ error: { code: err.code, message: err.message, ...err.details } });
+    if (err instanceof FlowValidationError) {
+      return reply.code(422).send({ error: { code: "invalid_flow", message: "the flow definition is invalid", issues: err.issues } });
+    }
+    if (err instanceof PlanLimitError) {
+      return reply.code(402).send({ error: { code: "plan_limit_reached", message: err.message, limit: err.limit, plan: err.plan, max: err.max } });
+    }
+    if (err instanceof FlowNotFoundError) return reply.code(404).send({ error: { code: "not_found", message: "flow not found" } });
+    const status = err.statusCode && err.statusCode >= 400 ? err.statusCode : 500;
+    if (status >= 500) req.log.error({ err }, "request failed");
+    const body: ApiErrorBody =
+      status >= 500
+        ? { error: { code: "internal_error", message: "Internal server error" } }
+        : { error: { code: err.code ?? "bad_request", message: err.message } };
+    return reply.code(status).send(body);
+  });
+
+  // CORS for the web app (credentials: the session cookie). Unknown origins get no CORS headers.
+  app.addHook("onRequest", async (req, reply) => {
+    const origin = req.headers.origin;
+    if (origin && ctx.corsOrigins.includes(origin)) {
+      reply.header("access-control-allow-origin", origin);
+      reply.header("access-control-allow-credentials", "true");
+      reply.header("vary", "Origin");
+    }
+  });
+  app.options("*", async (req, reply) => {
+    const origin = req.headers.origin;
+    if (origin && ctx.corsOrigins.includes(origin)) {
+      reply.header("access-control-allow-methods", "GET, POST, PATCH, DELETE");
+      reply.header("access-control-allow-headers", "authorization, content-type, idempotency-key");
+      reply.header("access-control-max-age", "600");
+    }
+    return reply.code(204).send();
   });
 
   app.get("/health", async (_req, reply) => {
@@ -143,25 +254,19 @@ export async function buildServer(deps: ServerDeps) {
     });
   });
 
-  const catalog = triggerCatalog(deps.triggers ?? createTriggerModules());
-  app.get("/v1/triggers", async () => ({ data: catalog }));
-  const actions = actionCatalog(deps.actions ?? createActionModules());
-  app.get("/v1/actions", async () => ({ data: actions }));
-  app.get("/v1/push/vapid-public-key", async () => ({ public_key: deps.vapidPublicKey ?? null }));
+  const triggersJson = triggerCatalog(triggers);
+  app.get("/v1/triggers", async () => ({ data: triggersJson }));
+  const actionsJson = actionCatalog(actions);
+  app.get("/v1/actions", async () => ({ data: actionsJson }));
+  app.get("/v1/push/vapid-public-key", async () => ({ public_key: ctx.vapidPublicKey }));
 
-  app.setNotFoundHandler((req, reply) => {
-    const body: ApiErrorBody = { error: { code: "not_found", message: `${req.method} ${req.url} not found` } };
-    return reply.code(404).send(body);
-  });
-
-  app.setErrorHandler((err: FastifyError, req, reply) => {
-    const status = err.statusCode && err.statusCode >= 400 ? err.statusCode : 500;
-    if (status >= 500) req.log.error({ err }, "request failed");
-    const body: ApiErrorBody =
-      status >= 500
-        ? { error: { code: "internal_error", message: "Internal server error" } }
-        : { error: { code: err.code ?? "bad_request", message: err.message } };
-    return reply.code(status).send(body);
+  registerAuthRoutes(app, ctx);
+  registerHookRoutes(app, ctx);
+  await app.register(async (scope) => {
+    scope.addHook("onRequest", authenticate({ db: ctx.db, corsOrigins: ctx.corsOrigins, now: ctx.now }));
+    registerAccountRoutes(scope, ctx);
+    registerConnectionRoutes(scope, ctx);
+    registerFlowRoutes(scope, ctx);
   });
 
   return app;

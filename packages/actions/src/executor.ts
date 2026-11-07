@@ -10,6 +10,7 @@ import {
   type ActionContext,
   type ActionRegistry,
   type ActionResult,
+  type ChainCallClient,
   type FlowDefinition,
   type RunFinalStatus,
   type SafeHttpClient,
@@ -52,6 +53,8 @@ export interface ExecutorDeps {
   push: WebPushSender | null;
   /** WEBHOOK_SIGNING_SECRET — per-owner secrets are derived from it. */
   webhookMaster: string | null;
+  /** Chain RPC for CHAIN_READ (null = not configured). */
+  chain?: ChainCallClient | null;
   logger: Logger;
   options?: ExecutorOptions;
 }
@@ -196,7 +199,7 @@ export class RunExecutor {
     attempt: number,
     outputs: Record<string, unknown>,
   ): Promise<ActionResult> {
-    const { actions, keyring, db, http, push, webhookMaster, logger } = this.#d;
+    const { actions, keyring, db, http, push, webhookMaster, logger, chain } = this.#d;
     const module = actions.has(step.type) ? actions.get(step.type) : undefined;
     if (!module) return { status: "failed", retryable: false, error: `${step.type} is not available on this runner` };
     const parsed = module.paramsSchema.safeParse(step.params);
@@ -242,6 +245,7 @@ export class RunExecutor {
       http,
       push: push ? { send: (message) => push.sendToUser(flow.ownerId, message) } : null,
       ownerSigningSecret: webhookMaster ? deriveOwnerSigningSecret(webhookMaster, flow.ownerId) : null,
+      chain: chain ?? null,
     };
     try {
       return await module.execute(parsed.data, ctx);

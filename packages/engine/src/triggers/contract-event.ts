@@ -1,7 +1,7 @@
 import { parseAbiItem, toEventSelector, type Abi, type AbiEvent, type AbiParameter } from "viem";
 import { z } from "zod";
-import { CHAIN_EVIDENCE_FIELDS, LOG_EVIDENCE_FIELDS, normalizeHash, type FieldSpec, type FieldType } from "@ignitra/core";
-import { BUILTIN_ABIS, decodeWithEvent, formatEventFragment } from "@ignitra/chain";
+import { CHAIN_EVIDENCE_FIELDS, LOG_EVIDENCE_FIELDS, normalizeHash } from "@ignitra/core";
+import { BUILTIN_ABIS, abiParamFields, decodeWithEvent, formatEventFragment } from "@ignitra/chain";
 import { logEvidence, logKey } from "../evidence";
 import { addressParam } from "../params";
 import type { LogTriggerModule, TriggerOutcome } from "../types";
@@ -51,30 +51,6 @@ export function parseEventFragment(fragment: string): AbiEvent {
   return item;
 }
 
-function fieldType(param: AbiParameter): FieldType {
-  const t = param.type;
-  if (t.endsWith("]")) return "array";
-  if (t === "tuple") return "object";
-  if (t === "address") return "address";
-  if (t === "bool") return "boolean";
-  if (t === "string") return "string";
-  if (t.startsWith("uint")) return "uint";
-  if (t.startsWith("int")) return "int";
-  if (t === "bytes32") return "hash";
-  return "string"; // bytes / bytesN as lowercase hex
-}
-
-function argFields(params: readonly AbiParameter[], prefix: string, depth: number): FieldSpec[] {
-  const out: FieldSpec[] = [];
-  params.forEach((p, i) => {
-    const name = p.name && p.name.length > 0 ? p.name : `arg${i}`;
-    const path = `${prefix}.${name}`;
-    out.push({ path, type: fieldType(p), description: `Event argument \`${p.type}${p.name ? ` ${p.name}` : ""}\`` });
-    if (p.type === "tuple" && "components" in p && depth < 3) out.push(...argFields(p.components, path, depth + 1));
-  });
-  return out;
-}
-
 export const contractEventTrigger: LogTriggerModule<ContractEventParams> = {
   type: "CONTRACT_EVENT",
   kind: "log",
@@ -117,7 +93,7 @@ export const contractEventTrigger: LogTriggerModule<ContractEventParams> = {
       ...LOG_EVIDENCE_FIELDS,
       { path: "event.name", type: "string", description: "Event name" },
       { path: "event.signature", type: "string", description: "Canonical signature, e.g. Transfer(address,address,uint256)" },
-      ...argFields(inputs, "args", 0),
+      ...abiParamFields(inputs, "args", (p) => `Event argument \`${p.type}${p.name ? ` ${p.name}` : ""}\``),
     ];
   },
 

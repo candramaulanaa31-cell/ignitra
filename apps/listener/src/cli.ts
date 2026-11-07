@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { and, between, count, desc, eq, max, min } from "drizzle-orm";
-import { normalizeAddress, normalizeHash, toChecksumAddress, type NormalizedHash } from "@ignitra/core";
+import { PLANS, normalizeAddress, normalizeHash, planLimits, toChecksumAddress, usagePeriod, type NormalizedHash, type Plan } from "@ignitra/core";
 import { chainConfigFromEnv, loadServiceEnv } from "@ignitra/core/server";
 import { AbiRegistry, BlockscoutAbiFetcher, EventDecoder, LogRangeTooLargeError, createRpcChainReader, type RawLog } from "@ignitra/chain";
 import {
@@ -14,6 +14,8 @@ import {
   flowVersions,
   flows,
   runs,
+  usageMonthly,
+  users,
   watches,
 } from "@ignitra/db";
 import {
@@ -22,6 +24,8 @@ import {
   createTriggerModules,
   ensureUser,
   getCurrentDefinition,
+  inboundHookSalt,
+  inboundHookUrl,
   setFlowStatus,
   updateFlowDefinition,
   type FlowServiceDeps,
@@ -43,6 +47,10 @@ import { DbAbiStore, ListenerStore, addWatch } from "./store";
  *   runs [--flow <id>] [--limit n]          queued/finished runs with condition traces
  *   evals --flow <id> [--limit n]            why matching events did NOT run
  *
+ * Accounts
+ *   user plan <wallet> <free|builder|team>   (no billing yet: operators set plans)
+ *   usage [--owner 0x…]                      runs metered this month vs the plan
+ *
  * Chain
  *   watch add <address> [event] [--fast] [--note …] | watch list | watch rm <id>
  *   status | events [--limit n] | stats | verify <from> <to>
@@ -54,6 +62,7 @@ const USAGE = `usage: pnpm ops <command>
   flow update <id> <file.json>
   runs [--flow <id>] [--limit n]
   evals --flow <id> [--limit n]
+  user plan <wallet> <free|builder|team> | usage [--owner 0x..]
   watch add <address> [event-signature|topic0] [--fast] [--note ..] | watch list | watch rm <id>
   status | events [--limit n] | stats | verify <from-block> <to-block>
 ${DELIVERY_USAGE}`;
@@ -158,7 +167,9 @@ async function flowCommand(sub: string | undefined, rest: string[]): Promise<voi
         runs: r.stats?.runs ?? 0,
         failed: r.stats?.conditionsFailed ?? 0,
         limited: r.stats?.rateLimited ?? 0,
+        quota: r.stats?.planLimited ?? 0,
         undetermined: r.stats?.undetermined ?? 0,
+        missed: r.stats?.missed ?? 0,
         reason: short(r.flow.statusReason, 40),
       })),
     );
@@ -168,7 +179,10 @@ async function flowCommand(sub: string | undefined, rest: string[]): Promise<voi
     const current = await getCurrentDefinition(db, id);
     const [stats] = await db.select().from(flowStats).where(eq(flowStats.flowId, id));
     const [flow] = await db.select().from(flows).where(eq(flows.id, id));
-    console.log(JSON.stringify({ flow, stats: stats ?? null, definition: current.definition }, null, 2));
+    const salt = current.definition.trigger.type === "INBOUND_WEBHOOK" ? await inboundHookSalt(db, id) : null;
+    const publicUrl = env.API_PUBLIC_URL ?? `http://${env.API_HOST}:${env.API_PORT}`;
+    const hook = salt && env.WEBHOOK_SIGNING_SECRET ? { hook_url: inboundHookUrl(publicUrl, env.WEBHOOK_SIGNING_SECRET, id, salt) } : {};
+    console.log(JSON.stringify({ flow, ...hook, stats: stats ?? null, definition: current.definition }, null, 2));
   } else if (sub === "pause" || sub === "resume") {
     const id = rest[0];
     if (!id) throw new Error(USAGE);
@@ -281,6 +295,23 @@ try {
         ].join("  "),
       );
     }
+  } else if (cmd === "user" && sub === "plan") {
+    const [wallet, plan] = rest;
+    if (!wallet || !plan || !(PLANS as readonly string[]).includes(plan)) throw new Error(`usage: pnpm ops user plan <wallet> <${PLANS.join("|")}>`);
+    const userId = await ensureUser(db, wallet);
+    await db.update(users).set({ plan: plan as Plan }).where(eq(users.id, userId));
+    const l = planLimits(plan);
+    console.log(`${userId} (${normalizeAddress(wallet)}) is on ${plan}: ${l.activeFlows ?? "unlimited"} active flows, ${l.runsPerMonth} runs/month${l.overage ? " + metered overage" : ""}, schedules every ${l.minScheduleMinutes} min at most`);
+  } else if (cmd === "usage") {
+    const period = usagePeriod();
+    const rows = await db
+      .select({ address: users.address, plan: users.plan, runs: usageMonthly.runs, planLimited: usageMonthly.planLimited, notified: usageMonthly.limitNotifiedAt })
+      .from(usageMonthly)
+      .innerJoin(users, eq(users.id, usageMonthly.userId))
+      .where(and(eq(usageMonthly.period, period), values.owner ? eq(users.address, normalizeAddress(values.owner)) : undefined))
+      .orderBy(desc(usageMonthly.runs));
+    console.log(`period ${period} (UTC)`);
+    console.table(rows.map((r) => ({ wallet: r.address, plan: r.plan, runs: r.runs, included: planLimits(r.plan).runsPerMonth, quota_dropped: r.planLimited, notified: r.notified?.toISOString() ?? "" })));
   } else if (cmd === "evals") {
     if (!values.flow) throw new Error("--flow <id> is required");
     const rows = await db.select().from(flowEvaluations).where(eq(flowEvaluations.flowId, values.flow)).orderBy(desc(flowEvaluations.id)).limit(limit);

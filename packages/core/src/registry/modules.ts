@@ -1,4 +1,5 @@
 import type { z } from "zod";
+import type { NormalizedAddress } from "../address";
 import type { ActionType, ConditionOperator, ConnectionType, TriggerType } from "../catalog";
 import type { FieldSpec } from "../fields";
 import { Registry } from "./registry";
@@ -63,6 +64,13 @@ export interface SafeHttpClient {
   request(req: SafeHttpRequest): Promise<SafeHttpResponse>;
 }
 
+/** Read-only chain access for actions (CHAIN_READ). Implemented by the RPC reader. */
+export interface ChainCallClient {
+  /** eth_call; `blockNumber` omitted = latest. Throws CallRevertedError / StateUnavailableError (@ignitra/chain). */
+  call(request: { readonly to: NormalizedAddress; readonly data: `0x${string}`; readonly blockNumber?: number }): Promise<`0x${string}`>;
+  blockNumber(): Promise<number>;
+}
+
 /** A decrypted connection. Secrets live only in memory, for the duration of the step. */
 export interface ActionConnection {
   readonly id: string;
@@ -114,6 +122,8 @@ export interface ActionContext {
   readonly push: { send(message: PushMessage): Promise<PushDelivery> } | null;
   /** Per-owner webhook signing secret (derived), when configured. */
   readonly ownerSigningSecret: string | null;
+  /** eth_call against the chain (null when the runner has no RPC configured). */
+  readonly chain: ChainCallClient | null;
 }
 
 /** Summaries stored in run_steps — never raw secrets. */
@@ -157,6 +167,10 @@ export interface ActionDefinition<TParams = unknown> {
   templates(params: TParams): ReadonlyArray<{ readonly name: string; readonly template: string }>;
   /** Fields of `output`, referenceable by later steps as `steps.<id>.*`. */
   readonly outputFields: readonly FieldSpec[];
+  /** Output fields for these params, when they depend on them (e.g. CHAIN_READ's return types). */
+  outputFieldsFor?(params: TParams): readonly FieldSpec[];
+  /** Save-time checks that need the flow's context (e.g. a trigger field the action relies on). */
+  validate?(params: TParams, ctx: { readonly triggerFields: readonly FieldSpec[] }): string[];
   execute(params: TParams, ctx: ActionContext): Promise<ActionResult>;
 }
 

@@ -69,7 +69,7 @@ describe("validateFlowDefinition", () => {
   });
 
   it("rejects triggers that are not implemented yet", async () => {
-    expect(await issuesOf({ ...bigBuys, trigger: { type: "SCHEDULE", params: {} }, conditions: undefined })).toEqual(["trigger.type: SCHEDULE is not available yet"]);
+    expect(await issuesOf({ ...bigBuys, trigger: { type: "VIGIL_ALERT", params: {} }, conditions: undefined })).toEqual(["trigger.type: VIGIL_ALERT is not available yet"]);
   });
 
   it("surfaces prepare() failures (unresolvable event names)", async () => {

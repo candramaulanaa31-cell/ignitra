@@ -10,5 +10,6 @@ export * from "./url";
 export * from "./conditions";
 export * from "./decimal";
 export * from "./fields";
+export * from "./plans";
 export * from "./templates";
 export * from "./template-check";

@@ -58,7 +58,8 @@ export function decodeEthBalance(result: MulticallResult): bigint | null {
   return decodeFunctionResult({ abi: multicall3Abi, functionName: "getEthBalance", data: result.returnData });
 }
 
-function formatParam(p: AbiParameter, withNames: boolean, indexed: boolean): string {
+/** Human-readable ABI parameter, e.g. `address indexed from`, `(address owner, uint64 cap) config`. */
+export function formatParam(p: AbiParameter, withNames: boolean, indexed: boolean): string {
   let type = p.type;
   if (type.startsWith("tuple")) {
     const components = "components" in p ? p.components : [];

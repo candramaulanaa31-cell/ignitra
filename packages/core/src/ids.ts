@@ -13,6 +13,8 @@ export const ID_PREFIXES = {
   watch: "wat",
   pushSubscription: "psub",
   notification: "ntf",
+  session: "ses",
+  inboundRequest: "req",
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;

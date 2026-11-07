@@ -1,5 +1,7 @@
 import { z } from "zod";
-import { envVar, keyringFromEnv, parseEnv, encryptionEnvSchema, workerEnvSchema, type Keyring } from "@ignitra/core/server";
+import type { ChainCallClient } from "@ignitra/core";
+import { chainConfigFromEnv, envVar, keyringFromEnv, parseEnv, encryptionEnvSchema, workerEnvSchema, type Keyring } from "@ignitra/core/server";
+import { createRpcChainReader } from "@ignitra/chain";
 import type { Logger } from "pino";
 import type { Database } from "@ignitra/db";
 import { createRunner, type RunnerRuntime } from "./runtime";
@@ -38,7 +40,7 @@ export const runnerEnvShape = {
 } as const;
 
 export const runnerEnvSchema = workerEnvSchema.extend(runnerEnvShape);
-type RunnerEnv = z.output<z.ZodObject<{ [K in keyof typeof runnerEnvShape]: (typeof runnerEnvShape)[K] }>>;
+type RunnerEnv = z.output<typeof runnerEnvSchema>;
 
 export function keyringFromRunnerEnv(env: RunnerEnv): Keyring | null {
   if (!env.ENCRYPTION_KEY) return null;
@@ -52,8 +54,14 @@ export function vapidFromEnv(env: RunnerEnv): VapidConfig | null {
   return { publicKey: env.VAPID_PUBLIC_KEY as string, privateKey: env.VAPID_PRIVATE_KEY as string, subject: env.VAPID_SUBJECT as string };
 }
 
+/** RPC reader for CHAIN_READ (presets supply a public RPC for Robinhood Chain); verifies the chain id before reading. */
+function chainFromEnv(env: RunnerEnv): ChainCallClient {
+  const chain = chainConfigFromEnv(env);
+  return createRpcChainReader({ primary: chain.rpc.primary, fallback: chain.rpc.fallback }, { expectedChainId: chain.id });
+}
+
 /** Builds a runner from env, logging what is (not) configured. */
-export function createRunnerFromEnv(env: RunnerEnv, deps: { db: Database; logger: Logger; owner: string }): RunnerRuntime {
+export function createRunnerFromEnv(env: RunnerEnv, deps: { db: Database; logger: Logger; owner: string; chain?: ChainCallClient }): RunnerRuntime {
   const keyring = keyringFromRunnerEnv(env);
   const vapid = vapidFromEnv(env);
   if (!keyring) deps.logger.warn("ENCRYPTION_KEY not set — steps that use connections (TELEGRAM, connection webhooks) will fail");
@@ -73,5 +81,6 @@ export function createRunnerFromEnv(env: RunnerEnv, deps: { db: Database; logger
     executor: { maxAttempts: env.RUNNER_MAX_ATTEMPTS, autoPauseAfter: env.RUNNER_AUTOPAUSE_FAILURES },
     outbound: { allowPrivateNetworks: env.OUTBOUND_ALLOW_PRIVATE, timeoutMs: env.OUTBOUND_TIMEOUT_MS },
     ...(env.TELEGRAM_API_URL ? { telegramApiBase: env.TELEGRAM_API_URL } : {}),
+    chain: deps.chain ?? chainFromEnv(env),
   });
 }

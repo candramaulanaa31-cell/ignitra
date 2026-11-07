@@ -4,26 +4,27 @@ Onchain automation for Robinhood Chain (chain id `4663`).
 **IF** something happens onchain → **THEN** do something anywhere.
 
 ```
-listener ──▶ trigger + condition engine ──▶ runs (queued) ──▶ runner ──▶ actions
- (chain)        (match, enrich, evaluate)     (unique key)     (retry)     (Discord, webhook, push…)
+listener / clock / inbound URL ──▶ trigger + condition engine ──▶ runs (queued) ──▶ runner ──▶ actions
+ (chain)   (cron)   (HTTP POST)       (match, enrich, evaluate)     (unique key)     (retry)     (Telegram, webhook, push, chain read)
 ```
 
-> **Status: Phase 4 — Runner & actions.** On-chain events end in delivered actions:
-> **Telegram**, signed **webhooks** and **Web Push** — with retries, full step traces,
-> reorg notices and auto-pause. Accounts / SIWE arrive in Phase 5.
+> **Status: Phase 5 — Accounts, API & plans.** Sign in with a wallet (SIWE), manage
+> connections and flows over the HTTP API, run flows on a **schedule**, on **contract state
+> changes** or from your own **inbound webhook URL**, read contracts mid-flow (**CHAIN_READ**),
+> with plan limits and exact usage metering enforced server-side. The builder UI is Phase 6.
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `apps/api` | Fastify HTTP API. Phase 1: `GET /health`, JSON errors. |
+| `apps/api` | Fastify HTTP API: SIWE sign-in, flows, connections, runs and traces, usage, inbound webhook URLs. |
 | `apps/web` | Next.js app (landing + `/app` placeholder). |
-| `apps/listener` | Chain process: ingestion (sync) + matcher, health endpoint, operator CLI (`pnpm ops`). |
+| `apps/listener` | Chain process: ingestion (sync) + matcher, optionally runner and API in the same process; health endpoint, operator CLI (`pnpm ops`). |
 | `apps/runner` | Flow runner: executes queued runs (concurrency, retries, traces, auto-pause). |
 | `packages/core` | Domain core. `@ignitra/core` is isomorphic; `@ignitra/core/server` is Node-only. |
-| `packages/actions` | SSRF-safe HTTP, WEBHOOK / TELEGRAM / WEB_PUSH modules, connections, Postgres run queue, executor. |
-| `packages/engine` | Trigger modules, token enrichment, condition evaluation glue, flow service, matcher (events → runs). |
-| `packages/chain` | RPC reader with failover, built-in ABIs, event decoder, explorer ABI registry. Test doubles under `@ignitra/chain/testing`. |
+| `packages/actions` | SSRF-safe HTTP, WEBHOOK / TELEGRAM / WEB_PUSH / CHAIN_READ modules, connections, Postgres run queue, executor. |
+| `packages/engine` | Trigger modules (chain, schedule, state, inbound), enrichment, flow service with plan limits, matcher (occurrences → runs, metering). |
+| `packages/chain` | RPC reader with failover, built-in ABIs, event decoder, contract-read encoding, explorer ABI registry. Test doubles under `@ignitra/chain/testing`. |
 | `packages/db` | Drizzle schema, SQL migrations, driver-agnostic client (Postgres or PGlite). |
 | `packages/sdk` | `@ignitra/sdk` skeleton (Phase 8). |
 
@@ -47,7 +48,8 @@ Requirements: Node ≥ 22.12 (developed on 24), pnpm 12.
 ```bash
 pnpm install
 cp .env.example .env          # defaults work for a first run
-pnpm gen:secret               # paste into ENCRYPTION_KEY (needed from Phase 5)
+pnpm gen:secret               # paste into ENCRYPTION_KEY (connections)
+pnpm gen:secret               # paste into WEBHOOK_SIGNING_SECRET (webhook signatures, inbound URLs)
 
 pnpm dev:api                  # http://localhost:4000/health
 pnpm dev:web                  # http://localhost:3000
@@ -265,6 +267,102 @@ Validated live on mainnet (USDG, about 80 s, all three stages in one process, in
 | Cross-check | Two flows on the same NEW_HOLDER trigger delivered identical counts |
 | Latency, block → receiver | p50 6.7 s, p95 17 s (the tail is public-RPC 429 backoff) |
 
+## Accounts, API and plans
+
+### Sign-In with Ethereum
+
+No passwords and no private keys. The web app asks the wallet to sign an EIP-4361 message:
+
+```
+GET  /v1/auth/nonce                        → { nonce }  (single use, 10 min)
+POST /v1/auth/verify { message, signature } → HttpOnly session cookie (+ bearer token with "return_token": true)
+```
+
+The server checks:
+
+- the message is complete EIP-4361;
+- its `domain` is allow-listed (`SIWE_DOMAINS`, default the hosts of `CORS_ORIGINS`) and `uri` is on that domain;
+- the chain id is 4663;
+- the time bounds hold;
+- the nonce is unused;
+- the signature is valid: ECDSA recovery for wallets, or **ERC-1271** `isValidSignature` on-chain for smart-contract wallets (Safe and others).
+
+The nonce is deleted atomically, so a signed message works exactly once. Sessions store only a SHA-256 of the token.
+
+Browsers get the HttpOnly session cookie (`SameSite=Lax`) and never see the token. Writes authenticated by that cookie must come from an allowed `Origin` (CSRF protection). Scripts send `Authorization: Bearer igs_…`.
+
+### Endpoints
+
+| | |
+|---|---|
+| `GET /v1/me`, `PATCH /v1/me`, `GET /v1/me/usage` | profile, display timezone (default `Asia/Jakarta`), plan, usage this month |
+| `GET /v1/me/webhook-secret` | your secret for verifying inline-URL webhook signatures |
+| `GET/POST /v1/connections`, `DELETE /v1/connections/:id` | Telegram (verified with Telegram before saving) and webhook destinations. Secrets go in and never come back, except a webhook connection's signing secret, which is shown once. A connection still used by a flow cannot be deleted (409). |
+| `GET/POST /v1/flows`, `GET/PATCH/DELETE /v1/flows/:id` | flows. Every save writes a new immutable version. Validation errors return 422 with every issue and its path. |
+| `POST /v1/flows/validate` | dry run: the normalized definition plus the trigger's payload fields |
+| `POST /v1/flows/:id/pause` · `/resume` · `/hook/rotate` | resume re-validates and enforces the plan; rotate replaces the inbound URL |
+| `GET /v1/flows/:id/runs?before=&status=`, `GET /v1/runs/:id` | run history (cursor paging) and the full trace |
+| `GET /v1/flows/:id/evaluations` | why matches did **not** run: conditions, hourly cap, plan quota, undetermined, missed |
+| `GET /v1/notifications`, `POST/GET/DELETE /v1/push/subscriptions` | owner notices (auto-pause, quota) and Web Push devices |
+
+Every resource is scoped to its owner. Another owner's id answers 404, never 403. Errors are always `{ error: { code, message, … } }`.
+
+### New triggers and action
+
+| | |
+|---|---|
+| `SCHEDULE` | `{ "cron": "0 9 * * 1-5" }` fires at 09:00 WIB on weekdays. It uses 5-field cron plus `@daily` and similar, `L`, `W` and `#`, in any IANA timezone, and handles DST. Each scheduled time fires at most once (key `schedule:<time>`). After downtime, only the latest time fires (within 1 h); earlier ones are recorded as `missed`. |
+| `STATE_CHANGE` | `{ "address": "0x…", "function": "balanceOf", "args": ["0x…"] }` fires when a contract read returns a different value. It is sampled at the confirmed head and exposes `previous`, `current` and `delta`. Bare function names are resolved from the ABI at save time. A reverting read is `undetermined`, never counted as a change. |
+| `INBOUND_WEBHOOK` | Your own URL, `POST /v1/hooks/<flow_id>/<token>`, accepts JSON, form or text bodies up to 64 KB. Conditions and templates can read any path below `body.*`. `Idempotency-Key` dedupes retries. The response is 202 when stored, 404 for a wrong token, 409 when the flow is paused. |
+| `CHAIN_READ` (action) | `eth_call` mid-flow, with templated address and args (`"{{trigger.to}}"`). The result is `{{steps.<id>.result}}`, typed from the function's return values, at `latest` or the trigger's block. |
+
+The inbound URL token is `HMAC(HKDF(WEBHOOK_SIGNING_SECRET), flow_id:salt)`. Only the salt is stored, so a database dump cannot forge requests, the owner can always see the URL, and rotating it just means a new salt.
+
+Intake is bounded:
+
+- 60 requests per minute per URL;
+- 5,000 requests per day per URL;
+- nothing is stored when a free plan has no runs left (402).
+
+### Plans
+
+| Plan | Active flows | Runs / month | Over the quota | Fastest schedule |
+|---|---|---|---|---|
+| Free | 3 | 500 | matches are recorded as `plan_limited`; no runs until the 1st (UTC) | every 15 min |
+| Builder | 20 | 10,000 | keeps running, overage metered | every minute |
+| Team | unlimited | 100,000 | keeps running, overage metered | every minute |
+
+Limits are enforced server-side:
+
+- **Active flows** are checked when a flow is created or resumed. The owner row is locked, so two concurrent activations cannot both pass. Over the limit returns 402.
+- **Schedule frequency** is checked at save time.
+- **Runs** are metered in `usage_monthly` inside the same transaction that creates them, so a replay creates and counts nothing.
+
+Owners are notified once per month when the quota runs out. There is no billing yet: operators set a plan with `pnpm ops user plan <wallet> builder`.
+
+### Running it
+
+- With real Postgres, run `pnpm dev:api`, `pnpm dev:listener` and `pnpm dev:runner` as separate processes.
+- With embedded PGlite, everything runs in one process: `LISTENER_ROLES=sync,matcher,runner,api pnpm dev:listener`.
+
+Validated live on mainnet (2026-11-07, about 9 minutes, all four roles in one process). A local API client signed in with SIWE, then created connections and flows over the API:
+
+| Check | Result |
+|---|---|
+| SIWE | EOA sign-in. Garbage message → 401. Another owner's flow → 404. |
+| Plan limits | Free plan: 4th active flow → 402, minutely schedule → 422 |
+| SCHEDULE `* * * * *` (WIB) | 9 consecutive minutes (13:22–13:30 WIB), 0 gaps, 0 duplicates. Fired 0.5 s after the minute (p50; max 1.0 s). CHAIN_READ `totalSupply()` ran in the same run. |
+| STATE_CHANGE | `balanceOf` of a busy USDG pool: 92 changes, each with the correct `delta` |
+| INBOUND_WEBHOOK | 4 POSTs: 1 duplicate key ignored, 1 below the condition, 2 runs with a CHAIN_READ of `body.wallet` |
+| Independent check | 35 recorded values (STATE_CHANGE before / after, CHAIN_READ results) re-read straight from the RPC at the same blocks: **0 mismatches** |
+| Delivery | 103 signed webhooks, all signatures valid, 0 duplicate keys. 103 Telegram messages. Usage meter = 103 = runs. |
+
+Not yet exercised live; covered by tests only:
+
+- **Scheduler downtime catch-up:** a deterministic clock fires the latest time and records 7 as `missed`.
+- **ERC-1271 sign-in from a real Safe:** tested against an on-chain-style contract in FakeChain.
+- **Real Telegram:** this run used a local Bot API stub.
+
 ## Scripts
 
 | Command | |
@@ -276,8 +374,9 @@ Validated live on mainnet (USDG, about 80 s, all three stages in one process, in
 | `pnpm dev` | all apps in parallel (needs real Postgres) |
 | `pnpm dev:listener` | chain listener |
 | `pnpm dev:runner` | flow runner |
+| `pnpm dev:api` | HTTP API (separate process needs real Postgres; with PGlite use the `api` role) |
 | `pnpm gen:secret` / `pnpm gen:vapid` | secrets (base64url) / Web Push VAPID keys |
-| `pnpm ops …` | flows, runs, traces, evaluations, connections, push, watches, sync status, verify |
+| `pnpm ops …` | flows, runs, traces, evaluations, connections, push, watches, sync status, verify, `user plan`, `usage` |
 
 ## Notes
 
@@ -291,7 +390,7 @@ Validated live on mainnet (USDG, about 80 s, all three stages in one process, in
 2. **Chain listener** ✅ blocks, logs, ABI registry, decoding, checkpoints, confirmations, reorgs
 3. **Trigger and condition engine** ✅ five chain triggers, conditions, matcher, idempotent runs, runaway protection
 4. **Flow runner** ✅ WEBHOOK / TELEGRAM (replaces Discord) / WEB_PUSH, retries, traces, SSRF guard, auto-pause
-5. SIWE, connections, schedule, chain read, plan limits
+5. **Accounts and API** ✅ SIWE (EOA + ERC-1271), connections and flows API, SCHEDULE / STATE_CHANGE / INBOUND_WEBHOOK, CHAIN_READ, plan limits + metering
 6. Builder UI + email / Google Sheets / HTTP
 7. Templates + public surface
 8. SDK, integrations, scoped onchain actions

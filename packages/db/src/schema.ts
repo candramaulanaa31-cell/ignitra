@@ -450,6 +450,10 @@ export const flowStats = pgTable("flow_stats", {
   conditionsFailed: bigint("conditions_failed", { mode: "number" }).notNull().default(0),
   rateLimited: bigint("rate_limited", { mode: "number" }).notNull().default(0),
   undetermined: bigint("undetermined", { mode: "number" }).notNull().default(0),
+  /** Matches dropped because the owner's plan had no runs left this month (Phase 5). */
+  planLimited: bigint("plan_limited", { mode: "number" }).notNull().default(0),
+  /** Scheduled times that passed while the scheduler was down (Phase 5). */
+  missed: bigint("missed", { mode: "number" }).notNull().default(0),
   lastMatchedAt: ts("last_matched_at"),
   lastRunAt: ts("last_run_at"),
   // ---- execution outcomes (Phase 4) ----
@@ -522,6 +526,109 @@ export const ownerNotifications = pgTable(
   (t) => [index("owner_notifications_user_idx").on(t.userId, t.createdAt.desc()), index("owner_notifications_unpushed_idx").on(t.createdAt).where(sql`pushed_at is null`)],
 );
 
+// ===========================================================================
+// Accounts, metering and inbound webhooks (Phase 5)
+// ===========================================================================
+
+// auth_nonces — single-use SIWE nonces. Consumed by DELETE … RETURNING, so a
+// nonce can be redeemed at most once even with concurrent verify requests.
+export const authNonces = pgTable(
+  "auth_nonces",
+  {
+    nonce: text("nonce").primaryKey(),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    expiresAt: ts("expires_at").notNull(),
+  },
+  (t) => [index("auth_nonces_expires_idx").on(t.expiresAt), check("auth_nonces_format", sql`nonce ~ '^[A-Za-z0-9]{8,64}$'`)],
+);
+
+// sessions — signed-in wallets. Only the SHA-256 of the bearer token is stored.
+export const sessions = pgTable(
+  "sessions",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull(),
+    /** Chain id of the SIWE message the session was created from. */
+    chainId: integer("chain_id").notNull(),
+    userAgent: text("user_agent"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    expiresAt: ts("expires_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("sessions_token_hash_key").on(t.tokenHash),
+    index("sessions_user_idx").on(t.userId),
+    index("sessions_expires_idx").on(t.expiresAt),
+    check("sessions_token_hash_format", sql`token_hash ~ '^[0-9a-f]{64}$'`),
+  ],
+);
+
+// usage_monthly — exact run metering per user and calendar month (UTC).
+// Incremented in the same transaction that creates the runs.
+export const usageMonthly = pgTable(
+  "usage_monthly",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** 'YYYY-MM' (UTC). */
+    period: text("period").notNull(),
+    runs: bigint("runs", { mode: "number" }).notNull().default(0),
+    /** Matches dropped because the plan's monthly runs were used up. */
+    planLimited: bigint("plan_limited", { mode: "number" }).notNull().default(0),
+    /** The owner was told the quota ran out (once per period). */
+    limitNotifiedAt: ts("limit_notified_at"),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ name: "usage_monthly_pkey", columns: [t.userId, t.period] }),
+    check("usage_monthly_period_format", sql`period ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'`),
+    check("usage_monthly_nonneg", sql`runs >= 0 and plan_limited >= 0`),
+  ],
+);
+
+// inbound_hooks — per-flow salt of the INBOUND_WEBHOOK URL. The URL token is
+// HMAC(master, flow_id:salt): nothing secret is stored; rotating = new salt.
+export const inboundHooks = pgTable("inbound_hooks", {
+  flowId: text("flow_id")
+    .primaryKey()
+    .references(() => flows.id, { onDelete: "cascade" }),
+  salt: text("salt").notNull(),
+  createdAt: ts("created_at").notNull().defaultNow(),
+  rotatedAt: ts("rotated_at"),
+});
+
+// inbound_events — accepted INBOUND_WEBHOOK requests; the matcher consumes them in id order.
+export const inboundEvents = pgTable(
+  "inbound_events",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    requestId: text("request_id").notNull(),
+    flowId: text("flow_id")
+      .notNull()
+      .references(() => flows.id, { onDelete: "cascade" }),
+    /** Idempotency-Key header, else the request id: one event per (flow, key). */
+    dedupeKey: text("dedupe_key").notNull(),
+    contentType: text("content_type"),
+    body: jsonb("body").$type<unknown>().notNull(),
+    query: jsonb("query").$type<Record<string, string>>().notNull().default({}),
+    /** Allow-listed, non-sensitive request headers only. */
+    headers: jsonb("headers").$type<Record<string, string>>().notNull().default({}),
+    bytes: integer("bytes").notNull(),
+    receivedAt: ts("received_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("inbound_events_dedupe_key").on(t.flowId, t.dedupeKey),
+    uniqueIndex("inbound_events_request_key").on(t.requestId),
+    index("inbound_events_received_idx").on(t.receivedAt),
+    /** Per-flow daily intake cap. */
+    index("inbound_events_flow_received_idx").on(t.flowId, t.receivedAt),
+    check("inbound_events_dedupe_length", sql`char_length(dedupe_key) between 1 and 200`),
+  ],
+);
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type Flow = typeof flows.$inferSelect;
@@ -545,3 +652,7 @@ export type FlowEvaluation = typeof flowEvaluations.$inferSelect;
 export type FlowStats = typeof flowStats.$inferSelect;
 export type PushSubscription = typeof pushSubscriptions.$inferSelect;
 export type OwnerNotification = typeof ownerNotifications.$inferSelect;
+export type Session = typeof sessions.$inferSelect;
+export type UsageMonthly = typeof usageMonthly.$inferSelect;
+export type InboundEvent = typeof inboundEvents.$inferSelect;
+export type NewInboundEvent = typeof inboundEvents.$inferInsert;

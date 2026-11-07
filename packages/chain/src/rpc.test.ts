@@ -176,3 +176,28 @@ describe("parsing", () => {
     expect(await reader.getLogs({ fromBlock: 1, toBlock: 2, addresses: [], topic0s: null })).toEqual([]);
   });
 });
+
+describe("RpcPool expectedChainId", () => {
+  const endpoint = (name: string, chainId: number, calls: string[]): RpcEndpoint => ({
+    name,
+    label: name,
+    async request(method) {
+      calls.push(`${name}:${method}`);
+      if (method === "eth_chainId") return `0x${chainId.toString(16)}`;
+      return "0x10";
+    },
+  });
+
+  it("verifies once before the first read, and refuses to read another chain", async () => {
+    const calls: string[] = [];
+    const pool = new RpcPool([endpoint("primary", 4663, calls)], { expectedChainId: 4663 });
+    await pool.request("eth_blockNumber");
+    await pool.request("eth_blockNumber");
+    expect(calls).toEqual(["primary:eth_chainId", "primary:eth_blockNumber", "primary:eth_blockNumber"]);
+
+    const wrong: string[] = [];
+    const mismatched = new RpcPool([endpoint("primary", 1, wrong)], { expectedChainId: 4663 });
+    await expect(mismatched.request("eth_call", [])).rejects.toThrow(/serves chain 1, expected 4663/);
+    expect(wrong).toEqual(["primary:eth_chainId"]); // the read itself never went out
+  });
+});

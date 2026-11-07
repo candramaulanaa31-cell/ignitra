@@ -1,5 +1,5 @@
 import type { Logger } from "pino";
-import type { ActionRegistry, SafeHttpClient } from "@ignitra/core";
+import type { ActionRegistry, ChainCallClient, SafeHttpClient } from "@ignitra/core";
 import type { Keyring } from "@ignitra/core/server";
 import type { Database, Run } from "@ignitra/db";
 import { createActionModules } from "./actions/index";
@@ -180,6 +180,8 @@ export interface RunnerConfig {
   executor?: ExecutorOptions;
   outbound?: { allowPrivateNetworks?: boolean; timeoutMs?: number };
   telegramApiBase?: string;
+  /** Chain RPC for CHAIN_READ. */
+  chain?: ChainCallClient | null;
   /** Overrides (tests). */
   http?: SafeHttpClient;
   actions?: ActionRegistry;
@@ -204,6 +206,7 @@ export function createRunner(config: RunnerConfig): RunnerRuntime {
     keyring: config.keyring,
     push,
     webhookMaster: config.webhookMaster,
+    chain: config.chain ?? null,
     logger: config.logger,
     ...(config.executor ? { options: config.executor } : {}),
   });

@@ -1,5 +1,5 @@
 import { and, asc, desc, eq, gt, inArray, max, ne, sql } from "drizzle-orm";
-import { newId, type EvaluationOutcome, type FlowDefinition } from "@ignitra/core";
+import { newId, planLimits, type EvaluationOutcome, type FlowDefinition, type Plan } from "@ignitra/core";
 import {
   Lease,
   chainCursors,
@@ -9,17 +9,21 @@ import {
   flowStats,
   flowVersions,
   flows,
+  inboundEvents,
   ownerNotifications,
   runs,
   triggerState,
+  usageMonthly,
+  users,
   type ChainEvent,
+  type InboundEvent,
   type Database,
   type Tx,
 } from "@ignitra/db";
 
 /** Matcher persistence. Every write runs in one transaction with the matcher lease fence. */
 
-export type MatcherStream = "confirmed" | "head" | "reverted";
+export type MatcherStream = "confirmed" | "head" | "reverted" | "inbound";
 
 export interface RunInsert {
   readonly id: string;
@@ -46,14 +50,21 @@ export interface StatsDelta {
   matched: number;
   conditionsFailed: number;
   rateLimited: number;
+  planLimited: number;
   undetermined: number;
+  missed: number;
 }
+
+export const emptyStats = (): StatsDelta => ({ matched: 0, conditionsFailed: 0, rateLimited: 0, planLimited: 0, undetermined: 0, missed: 0 });
 
 export interface BatchCommit {
   readonly runs: readonly RunInsert[];
   readonly evaluations: readonly EvaluationInsert[];
   readonly stats: ReadonlyMap<string, StatsDelta>;
   readonly pauses: ReadonlyArray<{ flowId: string; reason: string }>;
+  /** Usage metering: owner of every flow in the batch, and the period (UTC month) runs count towards. */
+  readonly owners: ReadonlyMap<string, string>;
+  readonly period: string;
 }
 
 export interface CommitResult {
@@ -66,7 +77,9 @@ export interface CommitResult {
 export interface ActiveFlowRow {
   readonly id: string;
   readonly ownerId: string;
+  readonly plan: Plan;
   readonly version: number;
+  readonly versionCreatedAt: Date;
   readonly activatedAt: Date | null;
   readonly definition: FlowDefinition;
 }
@@ -97,6 +110,10 @@ export class MatcherStore {
 
   /** Current end of a stream: a fresh matcher starts here instead of replaying history. */
   async streamHead(stream: MatcherStream): Promise<number> {
+    if (stream === "inbound") {
+      const [row] = await this.#db.select({ v: max(inboundEvents.id) }).from(inboundEvents);
+      return Number(row?.v ?? 0);
+    }
     const column = stream === "confirmed" ? chainEvents.confirmedSeq : stream === "reverted" ? chainEvents.revertedSeq : chainEvents.id;
     const [row] = await this.#db.select({ v: max(column) }).from(chainEvents).where(eq(chainEvents.chainId, this.chainId));
     return Number(row?.v ?? 0);
@@ -155,13 +172,31 @@ export class MatcherStore {
       .select({
         id: flows.id,
         ownerId: flows.ownerId,
+        plan: users.plan,
         version: flows.currentVersion,
+        versionCreatedAt: flowVersions.createdAt,
         activatedAt: flows.activatedAt,
         definition: flowVersions.definition,
       })
       .from(flows)
       .innerJoin(flowVersions, and(eq(flowVersions.flowId, flows.id), eq(flowVersions.version, flows.currentVersion)))
+      .innerJoin(users, eq(users.id, flows.ownerId))
       .where(eq(flows.status, "active"));
+  }
+
+  /** Runs metered this period, per owner. */
+  async usage(ownerIds: readonly string[], period: string): Promise<Map<string, number>> {
+    if (ownerIds.length === 0) return new Map();
+    const rows = await this.#db
+      .select({ userId: usageMonthly.userId, runs: usageMonthly.runs })
+      .from(usageMonthly)
+      .where(and(inArray(usageMonthly.userId, [...ownerIds]), eq(usageMonthly.period, period)));
+    return new Map(rows.map((r) => [r.userId, r.runs]));
+  }
+
+  /** Inbound webhook requests after `after` (id order). */
+  fetchInbound(after: number, limit: number): Promise<InboundEvent[]> {
+    return this.#db.select().from(inboundEvents).where(gt(inboundEvents.id, after)).orderBy(asc(inboundEvents.id)).limit(limit);
   }
 
   /** Non-test runs created in the trailing hour, per flow (the hourly cap is enforced from the DB). */
@@ -226,16 +261,26 @@ export class MatcherStore {
         .onConflictDoNothing({ target: flowEvaluations.idempotencyKey });
     }
     const flowIds = new Set([...batch.stats.keys(), ...inserted.keys()]);
+    const usage = new Map<string, { runs: number; planLimited: number }>();
     for (const flowId of flowIds) {
-      const d = batch.stats.get(flowId) ?? { matched: 0, conditionsFailed: 0, rateLimited: 0, undetermined: 0 };
+      const d = batch.stats.get(flowId) ?? emptyStats();
       const n = inserted.get(flowId) ?? 0;
+      const owner = batch.owners.get(flowId);
+      if (owner && (n > 0 || d.planLimited > 0)) {
+        const u = usage.get(owner) ?? { runs: 0, planLimited: 0 };
+        u.runs += n;
+        u.planLimited += d.planLimited;
+        usage.set(owner, u);
+      }
       const values = {
         flowId,
         matched: d.matched,
         runs: n,
         conditionsFailed: d.conditionsFailed,
         rateLimited: d.rateLimited,
+        planLimited: d.planLimited,
         undetermined: d.undetermined,
+        missed: d.missed,
         lastMatchedAt: d.matched > 0 ? sql`now()` : null,
         lastRunAt: n > 0 ? sql`now()` : null,
       };
@@ -249,12 +294,46 @@ export class MatcherStore {
             runs: sql`${flowStats.runs} + excluded.runs`,
             conditionsFailed: sql`${flowStats.conditionsFailed} + excluded.conditions_failed`,
             rateLimited: sql`${flowStats.rateLimited} + excluded.rate_limited`,
+            planLimited: sql`${flowStats.planLimited} + excluded.plan_limited`,
             undetermined: sql`${flowStats.undetermined} + excluded.undetermined`,
+            missed: sql`${flowStats.missed} + excluded.missed`,
             lastMatchedAt: sql`coalesce(excluded.last_matched_at, ${flowStats.lastMatchedAt})`,
             lastRunAt: sql`coalesce(excluded.last_run_at, ${flowStats.lastRunAt})`,
             updatedAt: sql`now()`,
           },
         });
+    }
+    // Metering: exact, in the transaction that created the runs (replays insert nothing, so count nothing).
+    for (const [userId, u] of usage) {
+      await tx
+        .insert(usageMonthly)
+        .values({ userId, period: batch.period, runs: u.runs, planLimited: u.planLimited })
+        .onConflictDoUpdate({
+          target: [usageMonthly.userId, usageMonthly.period],
+          set: {
+            runs: sql`${usageMonthly.runs} + excluded.runs`,
+            planLimited: sql`${usageMonthly.planLimited} + excluded.plan_limited`,
+            updatedAt: sql`now()`,
+          },
+        });
+      if (u.planLimited === 0) continue;
+      // Tell the owner once per period that flows stopped creating runs.
+      const first = await tx
+        .update(usageMonthly)
+        .set({ limitNotifiedAt: sql`now()` })
+        .where(and(eq(usageMonthly.userId, userId), eq(usageMonthly.period, batch.period), sql`${usageMonthly.limitNotifiedAt} is null`))
+        .returning({ userId: usageMonthly.userId });
+      if (first.length > 0) {
+        const [owner] = await tx.select({ plan: users.plan }).from(users).where(eq(users.id, userId));
+        const plan = owner?.plan ?? "free";
+        await tx.insert(ownerNotifications).values({
+          id: newId("notification"),
+          userId,
+          flowId: null,
+          kind: "plan_runs_exhausted",
+          message: `All ${planLimits(plan).runsPerMonth.toLocaleString("en-US")} runs of the ${plan} plan are used for ${batch.period}. Flows stay active and keep matching, but create no runs until the quota resets on the 1st (UTC). Upgrade for more runs.`,
+        });
+      }
     }
     for (const p of batch.pauses) {
       const paused = await tx
@@ -361,6 +440,15 @@ export class MatcherStore {
       returning e.id`);
     const result = rows as unknown as { rows?: unknown[]; length?: number };
     return Array.isArray(result) ? result.length : (result.rows?.length ?? 0);
+  }
+
+  /** Inbound webhook requests are kept `maxAgeDays` (their runs keep the payload). */
+  async pruneInbound(maxAgeDays: number): Promise<number> {
+    const rows = await this.#db
+      .delete(inboundEvents)
+      .where(sql`${inboundEvents.receivedAt} < now() - make_interval(days => ${maxAgeDays})`)
+      .returning({ id: inboundEvents.id });
+    return rows.length;
   }
 
   /** For tests and the CLI. */

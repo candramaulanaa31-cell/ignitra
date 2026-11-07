@@ -42,15 +42,16 @@ function indexAbi(abi: Abi, source: string, into: Map<string, Candidate[]> = new
   return into;
 }
 
-function normalizeValue(param: AbiParameter, value: unknown): JsonValue {
+/** Normalizes one ABI-decoded value (see rules above). */
+export function normalizeAbiValue(param: AbiParameter, value: unknown): JsonValue {
   const type = param.type;
   if (type.endsWith("]")) {
     const inner = { ...param, type: type.slice(0, type.lastIndexOf("[")) } as AbiParameter;
-    return Array.isArray(value) ? value.map((v) => normalizeValue(inner, v)) : null;
+    return Array.isArray(value) ? value.map((v) => normalizeAbiValue(inner, v)) : null;
   }
   if (type === "tuple") {
     const components = "components" in param ? param.components : [];
-    return normalizeTuple(components, value);
+    return normalizeAbiTuple(components, value);
   }
   if (typeof value === "bigint") return value.toString(10);
   if (type === "address" || type.startsWith("bytes")) return typeof value === "string" ? value.toLowerCase() : null;
@@ -58,14 +59,15 @@ function normalizeValue(param: AbiParameter, value: unknown): JsonValue {
   return null;
 }
 
-function normalizeTuple(params: readonly AbiParameter[], value: unknown): Record<string, JsonValue> {
+/** Normalizes decoded tuple / argument lists into an object keyed by param name (`arg<i>` when unnamed). */
+export function normalizeAbiTuple(params: readonly AbiParameter[], value: unknown): Record<string, JsonValue> {
   const out: Record<string, JsonValue> = {};
   params.forEach((param, i) => {
     const key = param.name && param.name.length > 0 ? param.name : `arg${i}`;
     let raw: unknown;
     if (Array.isArray(value)) raw = value[i];
     else if (value && typeof value === "object") raw = (value as Record<string, unknown>)[key] ?? (value as Record<string, unknown>)[String(i)];
-    out[key] = normalizeValue(param, raw);
+    out[key] = normalizeAbiValue(param, raw);
   });
   return out;
 }
@@ -84,7 +86,7 @@ function tryDecode(candidate: Candidate, log: Pick<RawLog, "topics" | "data">): 
       name: candidate.item.name,
       signature: toEventSignature(candidate.item),
       source: candidate.source,
-      args: normalizeTuple(candidate.item.inputs, decoded.args),
+      args: normalizeAbiTuple(candidate.item.inputs, decoded.args),
     };
   } catch {
     return null;

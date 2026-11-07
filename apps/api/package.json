@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "description": "HTTP API: SIWE sign-in, flows, connections, runs, usage, inbound webhooks.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
     "dev": "tsx watch --clear-screen=false src/main.ts",
     "start": "tsx src/main.ts",
@@ -16,7 +20,9 @@
     "drizzle-orm": "catalog:",
     "@ignitra/engine": "workspace:*",
     "zod": "catalog:",
-    "@ignitra/actions": "workspace:*"
+    "@ignitra/actions": "workspace:*",
+    "@ignitra/chain": "workspace:*",
+    "viem": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",

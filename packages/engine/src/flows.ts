@@ -1,23 +1,27 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import {
   flowDefinitionSchema,
   newId,
   normalizeAddress,
+  planLimits,
   validateConditionFields,
   validateTemplate,
   type ActionRegistry,
   type FieldSpec,
   type FlowDefinition,
   type FlowStatus,
+  type Plan,
 } from "@ignitra/core";
 import { connections, flowVersions, flows, triggerState, users, watches, type Database, type Tx } from "@ignitra/db";
+import { ensureInboundHook } from "./hooks";
 import type { PrepareContext, TriggerModuleRegistry } from "./types";
 
 /**
- * Flow service — the only way flows are created or changed (CLI now, API in
- * Phase 5). Every save goes through the same validation:
- *   structure → trigger params → module prepare() → mode support → condition fields
+ * Flow service — the only way flows are created or changed (API and CLI).
+ * Every save goes through the same validation:
+ *   structure → trigger params → module prepare() → mode support → plan limits → condition fields → actions
  * and versions are append-only: a change writes version N+1, never edits N.
+ * Plan limits (active flows, schedule frequency) are enforced here, server-side.
  */
 
 export interface FlowIssue {
@@ -40,6 +44,40 @@ export class FlowNotFoundError extends Error {
     super(`flow ${flowId} not found`);
     this.name = "FlowNotFoundError";
   }
+}
+
+/** The owner's plan does not allow this (e.g. another active flow). */
+export class PlanLimitError extends Error {
+  readonly limit: "active_flows";
+  readonly plan: Plan;
+  readonly max: number;
+
+  constructor(plan: Plan, max: number, current: number) {
+    super(`The ${plan} plan allows ${max} active flow${max === 1 ? "" : "s"} (you have ${current}). Pause another flow or upgrade.`);
+    this.name = "PlanLimitError";
+    this.limit = "active_flows";
+    this.plan = plan;
+    this.max = max;
+  }
+}
+
+async function ownerPlan(db: Database | Tx, ownerId: string): Promise<Plan> {
+  const [row] = await db.select({ plan: users.plan }).from(users).where(eq(users.id, ownerId));
+  return row?.plan ?? "free";
+}
+
+/** Inside the activating transaction: locks the owner row so concurrent activations cannot both pass. */
+async function assertCanActivate(tx: Tx, ownerId: string, flowId: string | null): Promise<void> {
+  const [owner] = await tx.select({ plan: users.plan }).from(users).where(eq(users.id, ownerId)).for("update");
+  const plan = owner?.plan ?? "free";
+  const max = planLimits(plan).activeFlows;
+  if (max === null) return;
+  const [row] = await tx
+    .select({ n: sql<number>`count(*)::int` })
+    .from(flows)
+    .where(and(eq(flows.ownerId, ownerId), eq(flows.status, "active"), flowId ? ne(flows.id, flowId) : undefined));
+  const active = Number(row?.n ?? 0);
+  if (active >= max) throw new PlanLimitError(plan, max, active);
 }
 
 export interface FlowServiceDeps {
@@ -80,6 +118,17 @@ export async function validateFlowDefinition(input: unknown, deps: ValidationDep
   const issues: FlowIssue[] = [];
   if (def.settings.mode === "fast" && !module.supportsFast) {
     issues.push({ path: "settings.mode", message: `${def.trigger.type} needs confirmed data and does not support fast mode` });
+  }
+  if (module.minIntervalMs && deps.db && ownerId) {
+    const interval = module.minIntervalMs(prepared);
+    const plan = await ownerPlan(deps.db, ownerId);
+    const minMinutes = planLimits(plan).minScheduleMinutes;
+    if (interval !== null && interval < minMinutes * 60_000) {
+      issues.push({
+        path: "trigger.params",
+        message: `the ${plan} plan allows schedules at most every ${minMinutes} minute${minMinutes === 1 ? "" : "s"}; this one fires every ${Math.max(1, Math.round(interval / 60_000))} minute(s)`,
+      });
+    }
   }
   const triggerFields = module.fields(prepared);
   for (const issue of validateConditionFields(def.conditions, triggerFields)) {
@@ -131,7 +180,8 @@ async function validateActions(
     for (const t of action.templates(params)) {
       for (const message of validateTemplate(t.template, { triggerFields, earlierSteps: earlier })) issues.push({ path: `${at}.params.${t.name}`, message });
     }
-    earlier.set(step.step_id, action.outputFields);
+    for (const message of action.validate?.(params, { triggerFields }) ?? []) issues.push({ path: `${at}.params`, message });
+    earlier.set(step.step_id, action.outputFieldsFor?.(params) ?? action.outputFields);
     out.push({ ...step, params });
   }
   return out;
@@ -187,6 +237,7 @@ export async function createFlow(
   const flowId = newId("flow");
   const status: FlowStatus = input.activate ? "active" : "paused";
   await deps.db.transaction(async (tx) => {
+    if (input.activate) await assertCanActivate(tx, input.ownerId, null);
     await tx.insert(flows).values({
       id: flowId,
       ownerId: input.ownerId,
@@ -197,6 +248,7 @@ export async function createFlow(
     });
     await tx.insert(flowVersions).values({ flowId, version: 1, definition });
     await syncWatches(tx, deps, flowId, definition);
+    if (definition.trigger.type === "INBOUND_WEBHOOK") await ensureInboundHook(tx, flowId);
   });
   return { flowId, version: 1, status, definition };
 }
@@ -214,8 +266,22 @@ export async function updateFlowDefinition(deps: FlowServiceDeps, flowId: string
     await tx.update(flows).set({ currentVersion: version, updatedAt: sql`now()` }).where(eq(flows.id, flowId));
     await tx.delete(triggerState).where(eq(triggerState.flowId, flowId));
     await syncWatches(tx, deps, flowId, definition);
+    if (definition.trigger.type === "INBOUND_WEBHOOK") await ensureInboundHook(tx, flowId);
     return { version, definition };
   });
+}
+
+export async function renameFlow(db: Database, flowId: string, name: string): Promise<string> {
+  const trimmed = validateName(name);
+  const rows = await db.update(flows).set({ name: trimmed, updatedAt: sql`now()` }).where(eq(flows.id, flowId)).returning({ id: flows.id });
+  if (rows.length === 0) throw new FlowNotFoundError(flowId);
+  return trimmed;
+}
+
+/** Deletes the flow with its versions, runs, evaluations and watches (FK cascades). */
+export async function deleteFlow(db: Database, flowId: string): Promise<boolean> {
+  const rows = await db.delete(flows).where(eq(flows.id, flowId)).returning({ id: flows.id });
+  return rows.length > 0;
 }
 
 export async function getCurrentDefinition(db: Database, flowId: string): Promise<{ version: number; definition: FlowDefinition; status: FlowStatus; ownerId: string }> {
@@ -238,6 +304,7 @@ export async function setFlowStatus(deps: FlowServiceDeps, flowId: string, statu
   if (status === "active") await validateFlowDefinition(current.definition, deps, current.ownerId);
   await deps.db.transaction(async (tx) => {
     const becomingActive = status === "active" && current.status !== "active";
+    if (becomingActive) await assertCanActivate(tx, current.ownerId, flowId);
     await tx
       .update(flows)
       .set({

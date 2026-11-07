@@ -182,6 +182,9 @@ catalogs:
     '@types/web-push':
       specifier: ^3.6.4
       version: 3.6.4
+    croner:
+      specifier: 10.0.1
+      version: 10.0.1
     drizzle-kit:
       specifier: ^0.31.11
       version: 0.31.11
@@ -237,6 +240,9 @@ importers:
       '@ignitra/actions':
         specifier: workspace:*
         version: link:../../packages/actions
+      '@ignitra/chain':
+        specifier: workspace:*
+        version: link:../../packages/chain
       '@ignitra/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -252,6 +258,9 @@ importers:
       fastify:
         specifier: 'catalog:'
         version: 5.12.8
+      viem:
+        specifier: 'catalog:'
+        version: 2.57.16(typescript@6.0.3)(zod@4.6.7)
       zod:
         specifier: 'catalog:'
         version: 4.6.7
@@ -274,6 +283,9 @@ importers:
       '@ignitra/actions':
         specifier: workspace:*
         version: link:../../packages/actions
+      '@ignitra/api':
+        specifier: workspace:*
+        version: link:../api
       '@ignitra/chain':
         specifier: workspace:*
         version: link:../../packages/chain
@@ -364,6 +376,9 @@ importers:
 
   packages/actions:
     dependencies:
+      '@ignitra/chain':
+        specifier: workspace:*
+        version: link:../chain
       '@ignitra/core':
         specifier: workspace:*
         version: link:../core
@@ -376,6 +391,9 @@ importers:
       pino:
         specifier: 'catalog:'
         version: 10.4.0
+      viem:
+        specifier: 'catalog:'
+        version: 2.57.16(typescript@6.0.3)(zod@4.6.7)
       web-push:
         specifier: 'catalog:'
         version: 3.6.7
@@ -488,6 +506,9 @@ importers:
       '@ignitra/db':
         specifier: workspace:*
         version: link:../db
+      croner:
+        specifier: 'catalog:'
+        version: 10.0.1
       drizzle-orm:
         specifier: 'catalog:'
         version: 0.45.4(@electric-sql/pglite@0.5.15)(@types/pg@8.23.1)(pg@8.23.1)
@@ -1476,6 +1497,10 @@ packages:
   cookie@2.0.1:
     resolution: {integrity: sha512-yuToqVvRrj6pfDXREyQAAv8SkAEk/8GS3jQRTiUMm66TVtBYmqQeoEjL2Lmq8Rpo6271vH76InTChTitEAm65w==}
     engines: {node: '>=22'}
+
+  croner@10.0.1:
+    resolution: {integrity: sha512-ixNtAJndqh173VQ4KodSdJEI6nuioBWI0V1ITNKhZZsO0pEMoDxz539T4FTTbSZ/xIOSuDnzxLVRqBVSvPNE2g==}
+    engines: {node: '>=18.0'}
 
   csstype@3.2.3:
     resolution: {integrity: sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==}
@@ -2763,6 +2788,8 @@ snapshots:
   client-only@0.0.1: {}
 
   cookie@2.0.1: {}
+
+  croner@10.0.1: {}
 
   csstype@3.2.3: {}
 

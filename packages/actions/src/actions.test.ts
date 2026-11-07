@@ -77,6 +77,7 @@ function ctx(overrides: Partial<ActionContext> = {}): ActionContext {
     http,
     push: null,
     ownerSigningSecret: deriveOwnerSigningSecret("master", "usr_owner"),
+    chain: null,
     ...overrides,
   };
 }

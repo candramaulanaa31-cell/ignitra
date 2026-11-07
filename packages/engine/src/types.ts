@@ -7,8 +7,10 @@ import type { TokenInfo } from "./tokens";
 /**
  * Trigger module contract (rule 3: pluggable modules, one shared interface).
  *
- *   log triggers  — react to ingested chain_events (TOKEN_TRANSFER, CONTRACT_EVENT, NEW_HOLDER)
- *   poll triggers — sample state at the confirmed head (BALANCE_THRESHOLD, CONTRACT_DEPLOYED)
+ *   log triggers      — react to ingested chain_events (TOKEN_TRANSFER, CONTRACT_EVENT, NEW_HOLDER)
+ *   poll triggers     — sample state at the confirmed head (BALANCE_THRESHOLD, CONTRACT_DEPLOYED, STATE_CHANGE)
+ *   schedule triggers — fire on the clock, independent of the chain (SCHEDULE)
+ *   inbound triggers  — react to requests accepted by the API (INBOUND_WEBHOOK)
  *
  * Modules decide WHETHER an occurrence happened and build its payload. They
  * never touch the database, never evaluate conditions and never create runs —
@@ -57,7 +59,15 @@ export interface TriggerUndetermined {
   readonly chainEventId?: number;
 }
 
-export type TriggerOutcome = TriggerMatch | TriggerUndetermined;
+/** Scheduled occurrences that passed while the scheduler was not running (recorded, never silently dropped). */
+export interface TriggerMissed {
+  readonly kind: "missed";
+  readonly key: string;
+  readonly reason: string;
+  readonly payload: Payload;
+}
+
+export type TriggerOutcome = TriggerMatch | TriggerUndetermined | TriggerMissed;
 
 export interface TriggerRuntime {
   readonly chain: ChainConfig;
@@ -86,6 +96,8 @@ interface TriggerModuleBase<P> extends TriggerDefinition<P> {
   readonly supportsFast: boolean;
   /** Drop in-memory state (after a failed batch or a deep reorg). Correctness must survive a reset. */
   reset?(): void;
+  /** Shortest time between two occurrences, when the trigger fires on a clock (plan limits). */
+  minIntervalMs?(params: P): number | null;
 }
 
 export interface LogTriggerModule<P = unknown> extends TriggerModuleBase<P> {
@@ -113,11 +125,45 @@ export interface PollTriggerModule<P = unknown, S = unknown> extends TriggerModu
   poll(input: PollInput<P, S>, rt: TriggerRuntime): Promise<{ state: S | null; outcomes: TriggerOutcome[] }>;
 }
 
+/** Clock-driven trigger. The matcher keeps the last fired slot in trigger_state. */
+export interface ScheduleTriggerModule<P = unknown> extends TriggerModuleBase<P> {
+  readonly kind: "schedule";
+  /** First occurrence strictly after `after`, or null when the schedule never fires again. */
+  next(params: P, after: Date): Date | null;
+  /** Latest occurrence at or before `at`, or null. */
+  latest(params: P, at: Date): Date | null;
+  /** Payload of the occurrence at `slot`, evaluated at `firedAt`. */
+  payload(params: P, slot: Date, firedAt: Date): Payload;
+}
+
+/** A request accepted by a flow's INBOUND_WEBHOOK URL (inbound_events row). */
+export interface InboundEventView {
+  readonly id: number;
+  readonly requestId: string;
+  readonly flowId: string;
+  /** Idempotency-Key header when the sender set one, else the request id. */
+  readonly dedupeKey: string;
+  readonly idempotencyKey: string | null;
+  readonly contentType: string | null;
+  readonly body: unknown;
+  readonly query: Readonly<Record<string, string>>;
+  readonly headers: Readonly<Record<string, string>>;
+  readonly bytes: number;
+  readonly receivedAt: Date;
+}
+
+export interface InboundTriggerModule<P = unknown> extends TriggerModuleBase<P> {
+  readonly kind: "inbound";
+  match(event: InboundEventView, params: P): TriggerOutcome | null;
+}
+
 /*
  * Registries hold modules with erased params; each module re-validates its
  * params through `paramsSchema` before use (see matcher/flow index).
  */
 export type AnyLogTrigger = LogTriggerModule<any>;
 export type AnyPollTrigger = PollTriggerModule<any, any>;
-export type AnyTriggerModule = AnyLogTrigger | AnyPollTrigger;
+export type AnyScheduleTrigger = ScheduleTriggerModule<any>;
+export type AnyInboundTrigger = InboundTriggerModule<any>;
+export type AnyTriggerModule = AnyLogTrigger | AnyPollTrigger | AnyScheduleTrigger | AnyInboundTrigger;
 export type TriggerModuleRegistry = Registry<TriggerType, AnyTriggerModule>;

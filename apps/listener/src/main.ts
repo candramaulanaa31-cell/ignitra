@@ -3,11 +3,13 @@ import { randomBytes } from "node:crypto";
 import { redactUrl } from "@ignitra/core";
 import { chainConfigFromEnv, closeServer, createLogger, loadServiceEnv, runService, startHealthServer } from "@ignitra/core/server";
 import { createRunnerFromEnv, type RunnerRuntime } from "@ignitra/actions";
+import { createApiFromEnv } from "@ignitra/api";
 import { AbiRegistry, BlockscoutAbiFetcher, EventDecoder, createRpcChainReader } from "@ignitra/chain";
 import { createDb } from "@ignitra/db";
 import { Matcher, MatcherRuntime, TokenInfo, createTriggerModules } from "@ignitra/engine";
 import { explorerApiUrl, listenerEnvSchema } from "./config";
 import { HeadWatcher } from "./head";
+import pkg from "../package.json" with { type: "json" };
 import { ListenerRuntime } from "./runtime";
 import { DbAbiStore, ListenerStore } from "./store";
 import { ChainSync } from "./sync";
@@ -17,6 +19,7 @@ import { ChainSync } from "./sync";
  *   sync     — ingest logs for watched contracts, confirm, handle reorgs
  *   matcher  — turn confirmed (and fast-mode pending) events into queued runs
  *   runner   — execute runs (normally apps/runner; here for single-process setups)
+ *   api      — the HTTP API (normally apps/api; here for single-process setups)
  * Each role holds its own lease / row locks, so they can run as separate processes.
  */
 const env = loadServiceEnv(listenerEnvSchema);
@@ -41,7 +44,9 @@ await runService(logger, async () => {
   const loops: Promise<void>[] = [];
 
   // ---- runner (optional, single-process mode) -------------------------------
-  const runner: RunnerRuntime | null = roles.has("runner") ? createRunnerFromEnv(env, { db: db.db, logger: logger.child({ component: "runner" }), owner }) : null;
+  const runner: RunnerRuntime | null = roles.has("runner")
+    ? createRunnerFromEnv(env, { db: db.db, logger: logger.child({ component: "runner" }), owner, chain: reader })
+    : null;
 
   // ---- matcher -------------------------------------------------------------
   let matcherRuntime: MatcherRuntime | null = null;
@@ -68,6 +73,19 @@ await runService(logger, async () => {
       onRunsQueued: () => runner?.wakeup.notify(),
     });
   }
+
+  // ---- api (optional, single-process mode) ------------------------------------
+  const api = roles.has("api")
+    ? await createApiFromEnv(env, {
+        db,
+        chain,
+        logger: logger.child({ component: "api" }),
+        version: pkg.version,
+        reader,
+        // Inbound webhook stored: match it now instead of at the next matcher tick.
+        onInboundEvent: () => matcherRuntime?.wakeup.notify(),
+      })
+    : null;
 
   // ---- sync ----------------------------------------------------------------
   let syncRuntime: ListenerRuntime | null = null;
@@ -145,14 +163,20 @@ await runService(logger, async () => {
   }
   if (matcherRuntime) loops.push(matcherRuntime.run(controller.signal));
   if (runner) loops.push(runner.run(controller.signal));
+  if (api) {
+    await api.app.listen({ host: env.API_HOST, port: env.API_PORT });
+    logger.info({ url: `http://${env.API_HOST}:${env.API_PORT}`, publicUrl: api.publicUrl }, "api listening");
+  }
 
   return async () => {
+    await api?.app.close();
     controller.abort();
     head?.stop();
     matcherRuntime?.wakeup.notify();
     runner?.wakeup.notify();
     await Promise.all(loops);
     await abis?.idle();
+    await api?.abis.idle();
     await store?.releaseLease().catch(() => {});
     await closeServer(server);
     await db.close();

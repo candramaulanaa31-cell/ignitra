@@ -19,7 +19,8 @@
     "pino": "catalog:",
     "viem": "catalog:",
     "@ignitra/engine": "workspace:*",
-    "@ignitra/actions": "workspace:*"
+    "@ignitra/actions": "workspace:*",
+    "@ignitra/api": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "catalog:",

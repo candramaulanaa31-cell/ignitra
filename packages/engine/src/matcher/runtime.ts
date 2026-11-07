@@ -50,13 +50,13 @@ export class MatcherRuntime {
         if (report.role === "leader") {
           if (!wasLeader) this.#log.info("acquired matcher lease — active");
           wasLeader = true;
-          const runs = (report.confirmed?.runs ?? 0) + (report.head?.runs ?? 0) + (report.polled?.runs ?? 0);
+          const runs = (report.confirmed?.runs ?? 0) + (report.head?.runs ?? 0) + (report.polled?.runs ?? 0) + (report.scheduled?.runs ?? 0) + (report.inbound?.runs ?? 0);
           this.#runsCreated += runs;
           if (runs > 0) {
-            this.#log.info({ runs, confirmed: report.confirmed, head: report.head, polled: report.polled }, "runs queued");
+            this.#log.info({ runs, confirmed: report.confirmed, head: report.head, polled: report.polled, scheduled: report.scheduled, inbound: report.inbound }, "runs queued");
             this.#onRunsQueued();
           }
-          if (report.confirmed?.behind || report.head?.behind) delay = 0;
+          if (report.confirmed?.behind || report.head?.behind || report.inbound?.behind) delay = 0;
         } else {
           if (wasLeader) this.#log.warn("lost matcher lease — standby");
           wasLeader = false;
@@ -85,7 +85,7 @@ export class MatcherRuntime {
       last_error: this.#lastError,
       consecutive_errors: this.#errors,
       runs_created: this.#runsCreated,
-      behind: Boolean(r?.confirmed?.behind || r?.head?.behind),
+      behind: Boolean(r?.confirmed?.behind || r?.head?.behind || r?.inbound?.behind),
     };
   }
 }

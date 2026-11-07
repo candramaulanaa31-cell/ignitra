@@ -1,25 +1,39 @@
 import type { Logger } from "pino";
-import { evaluateConditions, newId, type ChainConfig, type FlowDefinition, type NormalizedHash } from "@ignitra/core";
+import { evaluateConditions, newId, planLimits, usagePeriod, type ChainConfig, type FlowDefinition, type NormalizedHash, type Plan } from "@ignitra/core";
 import type { ChainReader } from "@ignitra/chain";
-import type { ChainEvent, Database } from "@ignitra/db";
+import type { ChainEvent, Database, InboundEvent } from "@ignitra/db";
 import { idempotencyKey } from "../evidence";
 import type { TokenInfo } from "../tokens";
-import type { AnyLogTrigger, AnyPollTrigger, AnyTriggerModule, ChainEventView, TriggerModuleRegistry, TriggerOutcome, TriggerRuntime } from "../types";
+import type {
+  AnyInboundTrigger,
+  AnyLogTrigger,
+  AnyPollTrigger,
+  AnyScheduleTrigger,
+  AnyTriggerModule,
+  ChainEventView,
+  InboundEventView,
+  TriggerModuleRegistry,
+  TriggerOutcome,
+  TriggerRuntime,
+} from "../types";
 import { EvaluationSampler, SlidingCounter } from "./admission";
-import { MatcherStore, type BatchCommit, type EvaluationInsert, type MatcherStream, type RunInsert, type StatsDelta } from "./store";
+import { MatcherStore, emptyStats, type BatchCommit, type EvaluationInsert, type MatcherStream, type RunInsert, type StatsDelta } from "./store";
 
 /**
- * Matcher — turns chain events into queued runs.
+ * Matcher — turns trigger occurrences into queued runs.
  *
  *   confirmed stream  events in confirmation order → flows in `confirmed` mode (default)
  *   head stream       events in ingestion order    → flows in `fast` mode (act at head)
  *   reverted stream   reorged-out events           → mark / cancel / re-point their runs
- *   polls             BALANCE_THRESHOLD, CONTRACT_DEPLOYED sampled at the confirmed cursor
+ *   polls             BALANCE_THRESHOLD, CONTRACT_DEPLOYED, STATE_CHANGE sampled at the confirmed cursor
+ *   schedules         SCHEDULE, on the clock (independent of the chain)
+ *   inbound stream    requests accepted by INBOUND_WEBHOOK URLs
  *
- * Each (event, flow) pair is evaluated by exactly one stream. Every decision
- * is uniform across trigger types: trigger outcome → conditions → hourly cap
- * → run (queued) or evaluation record. Runs are unique on their idempotency
- * key `chain_id:tx_hash:log_index:flow_id`, so replays are no-ops.
+ * Every decision is uniform across trigger types:
+ *   trigger outcome → conditions → hourly cap → plan quota → run (queued) or evaluation record
+ * Runs are unique on their idempotency key (`chain_id:tx_hash:log_index:flow_id` for
+ * chain events, `…:schedule:<time>:…`, `…:inbound:<key>:…`), so replays are no-ops, and
+ * usage is metered in the same transaction that creates the runs.
  */
 
 export interface MatcherOptions {
@@ -34,11 +48,20 @@ export interface MatcherOptions {
   evaluationMaxAgeDays?: number;
   pruneEveryMs?: number;
   flowsCacheMs?: number;
+  /** A scheduled time fires if the scheduler reaches it within this window; older ones are recorded as missed. */
+  scheduleGraceMs?: number;
+  /** Inbound webhook requests are kept this long. */
+  inboundRetentionDays?: number;
+  /** Clock (tests). */
+  now?: () => number;
 }
 
 interface ActiveFlow {
   readonly id: string;
+  readonly ownerId: string;
+  readonly plan: Plan;
   readonly version: number;
+  readonly versionCreatedAtMs: number;
   readonly activatedAtMs: number | null;
   readonly definition: FlowDefinition;
   readonly module: AnyTriggerModule;
@@ -51,6 +74,8 @@ interface ActiveFlow {
 interface FlowIndex {
   readonly log: ActiveFlow[];
   readonly poll: ActiveFlow[];
+  readonly schedule: ActiveFlow[];
+  readonly inbound: ActiveFlow[];
   readonly loadedAt: number;
 }
 
@@ -87,8 +112,13 @@ export interface MatcherReport {
   readonly head?: StreamReport;
   readonly reverted?: RevertReport;
   readonly polled?: PollReport;
+  readonly scheduled?: PollReport;
+  readonly inbound?: StreamReport;
   readonly paused?: string[];
 }
+
+/** Missed scheduled times counted individually up to this many (then "N+"). */
+const MAX_MISSED_COUNT = 200;
 
 const watchKey = (address: string, topic0: string | null) => `${address}:${topic0 ?? "*"}`;
 
@@ -109,6 +139,24 @@ function toView(row: ChainEvent): ChainEventView {
   };
 }
 
+function toInboundView(row: InboundEvent): InboundEventView {
+  return {
+    id: row.id,
+    requestId: row.requestId,
+    flowId: row.flowId,
+    dedupeKey: row.dedupeKey,
+    idempotencyKey: row.dedupeKey === row.requestId ? null : row.dedupeKey,
+    contentType: row.contentType,
+    body: row.body,
+    query: row.query,
+    headers: row.headers,
+    bytes: row.bytes,
+    receivedAt: row.receivedAt,
+  };
+}
+
+const duration = (ms: number) => (ms % 3_600_000 === 0 ? `${ms / 3_600_000}h` : ms % 60_000 === 0 ? `${ms / 60_000}m` : `${Math.round(ms / 1000)}s`);
+
 export class Matcher {
   readonly store: MatcherStore;
   readonly #chain: ChainConfig;
@@ -116,10 +164,13 @@ export class Matcher {
   readonly #rt: TriggerRuntime;
   readonly #triggers: TriggerModuleRegistry;
   readonly #log: Logger;
-  readonly #opts: Required<MatcherOptions>;
+  readonly #opts: Required<Omit<MatcherOptions, "now">>;
+  readonly #now: () => number;
   readonly #drops = new SlidingCounter();
   readonly #sampler: EvaluationSampler;
   readonly #lastPoll = new Map<string, number>();
+  /** Next scheduled time per (flow, generation): most ticks check a number, not the database. */
+  readonly #scheduleDue = new Map<string, number>();
   readonly #warned = new Set<string>();
   #index: FlowIndex | null = null;
   #lastPrune = 0;
@@ -140,6 +191,8 @@ export class Matcher {
     this.#log = deps.logger;
     this.store = new MatcherStore(deps.db, { chainId: deps.chain.id, owner: deps.owner });
     this.#rt = { chain: deps.chain, reader: deps.reader, tokens: deps.tokens, logger: deps.logger };
+    const { now, ...options } = deps.options ?? {};
+    this.#now = now ?? Date.now;
     this.#opts = {
       batchSize: 500,
       pollIntervalMs: 15_000,
@@ -149,7 +202,9 @@ export class Matcher {
       evaluationMaxAgeDays: 7,
       pruneEveryMs: 10 * 60_000,
       flowsCacheMs: 2_000,
-      ...deps.options,
+      scheduleGraceMs: 3_600_000,
+      inboundRetentionDays: 7,
+      ...options,
     };
     this.#sampler = new EvaluationSampler(this.#opts.evaluationsPerMinute);
   }
@@ -168,14 +223,18 @@ export class Matcher {
     const head = await this.#consume("head", index.log.filter((f) => f.fast), paused);
     const reverted = await this.#reverts(index);
     const polled = await this.#polls(index, paused);
+    const scheduled = await this.#schedules(index, paused);
+    const inbound = await this.#inbound(index, paused);
     if (paused.length > 0) this.invalidateFlows();
 
-    if (Date.now() - this.#lastPrune > this.#opts.pruneEveryMs) {
-      this.#lastPrune = Date.now();
+    if (this.#now() - this.#lastPrune > this.#opts.pruneEveryMs) {
+      this.#lastPrune = this.#now();
       const pruned = await this.store.pruneEvaluations(this.#opts.keepEvaluations, this.#opts.evaluationMaxAgeDays);
-      if (pruned > 0) this.#log.debug({ pruned }, "pruned flow evaluations");
+      const requests = await this.store.pruneInbound(this.#opts.inboundRetentionDays);
+      if (pruned + requests > 0) this.#log.debug({ pruned, requests }, "pruned flow evaluations / inbound requests");
     }
-    return { role: "leader", flows: index.log.length + index.poll.length, confirmed, head, reverted, polled, paused };
+    const flows = index.log.length + index.poll.length + index.schedule.length + index.inbound.length;
+    return { role: "leader", flows, confirmed, head, reverted, polled, scheduled, inbound, paused };
   }
 
   // ---- flow index ------------------------------------------------------------
@@ -187,9 +246,8 @@ export class Matcher {
   }
 
   async #flows(): Promise<FlowIndex> {
-    if (this.#index && Date.now() - this.#index.loadedAt < this.#opts.flowsCacheMs) return this.#index;
-    const log: ActiveFlow[] = [];
-    const poll: ActiveFlow[] = [];
+    if (this.#index && this.#now() - this.#index.loadedAt < this.#opts.flowsCacheMs) return this.#index;
+    const index: FlowIndex = { log: [], poll: [], schedule: [], inbound: [], loadedAt: this.#now() };
     for (const row of await this.store.loadActiveFlows()) {
       const type = row.definition.trigger.type;
       const module = this.#triggers.has(type) ? this.#triggers.get(type) : undefined;
@@ -204,23 +262,26 @@ export class Matcher {
       }
       const base = {
         id: row.id,
+        ownerId: row.ownerId,
+        plan: row.plan,
         version: row.version,
+        versionCreatedAtMs: row.versionCreatedAt.getTime(),
         activatedAtMs: row.activatedAt ? row.activatedAt.getTime() : null,
         definition: row.definition,
         module,
         params: params.data,
         generation: `${row.version}:${row.activatedAt?.getTime() ?? 0}`,
         fast: row.definition.settings.mode === "fast" && module.supportsFast,
+        watchKeys: new Set<string>(),
       };
       if (module.kind === "log") {
-        const keys = new Set((module as AnyLogTrigger).watches(params.data).map((w) => watchKey(w.address, w.topic0)));
-        log.push({ ...base, watchKeys: keys });
+        index.log.push({ ...base, watchKeys: new Set(module.watches(params.data).map((w) => watchKey(w.address, w.topic0))) });
       } else {
-        poll.push({ ...base, watchKeys: new Set() });
+        index[module.kind].push(base);
       }
     }
-    this.#index = { log, poll, loadedAt: Date.now() };
-    return this.#index;
+    this.#index = index;
+    return index;
   }
 
   // ---- admission -------------------------------------------------------------
@@ -230,13 +291,15 @@ export class Matcher {
     const evaluations: EvaluationInsert[] = [];
     const stats = new Map<string, StatsDelta>();
     const pauses: Array<{ flowId: string; reason: string }> = [];
+    const owners = new Map(decisions.map((d) => [d.flow.id, d.flow.ownerId]));
+    const period = usagePeriod(new Date(this.#now()));
     const delta = (flowId: string) => {
       let d = stats.get(flowId);
-      if (!d) stats.set(flowId, (d = { matched: 0, conditionsFailed: 0, rateLimited: 0, undetermined: 0 }));
+      if (!d) stats.set(flowId, (d = emptyStats()));
       return d;
     };
     const record = (d: Decision, outcome: EvaluationInsert["outcome"], reason: string | null, conditions: unknown[]) => {
-      if (!this.#sampler.allow(d.flow.id)) return;
+      if (!this.#sampler.allow(d.flow.id, this.#now())) return;
       evaluations.push({
         flowId: d.flow.id,
         flowVersion: d.flow.version,
@@ -248,8 +311,9 @@ export class Matcher {
       });
     };
 
-    const candidates = decisions.filter((d) => d.outcome.kind === "match").map((d) => d.flow.id);
-    const counts = await this.store.runsLastHour([...new Set(candidates)]);
+    const matches = decisions.filter((d) => d.outcome.kind === "match");
+    const counts = await this.store.runsLastHour([...new Set(matches.map((d) => d.flow.id))]);
+    const used = await this.store.usage([...new Set(matches.map((d) => d.flow.ownerId))], period);
     const dropped = new Map<string, number>();
 
     for (const d of decisions) {
@@ -257,6 +321,11 @@ export class Matcher {
       if (d.outcome.kind === "undetermined") {
         delta(flowId).undetermined++;
         record(d, "undetermined", d.outcome.reason, []);
+        continue;
+      }
+      if (d.outcome.kind === "missed") {
+        delta(flowId).missed++;
+        record(d, "missed", d.outcome.reason, []);
         continue;
       }
       delta(flowId).matched++;
@@ -267,14 +336,23 @@ export class Matcher {
         continue;
       }
       const cap = d.flow.definition.settings.max_runs_per_hour;
-      const used = counts.get(flowId) ?? 0;
-      if (used >= cap) {
+      const hour = counts.get(flowId) ?? 0;
+      if (hour >= cap) {
         delta(flowId).rateLimited++;
         dropped.set(flowId, (dropped.get(flowId) ?? 0) + 1);
         record(d, "rate_limited", `max_runs_per_hour=${cap} reached`, evaluation.results as unknown[]);
         continue;
       }
-      counts.set(flowId, used + 1);
+      // Plan quota: free plans stop creating runs at the monthly limit; paid plans meter overage.
+      const limits = planLimits(d.flow.plan);
+      const month = used.get(d.flow.ownerId) ?? 0;
+      if (!limits.overage && month >= limits.runsPerMonth) {
+        delta(flowId).planLimited++;
+        record(d, "plan_limited", `${d.flow.plan} plan: all ${limits.runsPerMonth} runs of ${period} used (resets on the 1st, UTC)`, evaluation.results as unknown[]);
+        continue;
+      }
+      counts.set(flowId, hour + 1);
+      used.set(d.flow.ownerId, month + 1);
       runs.push({
         id: newId("run"),
         flowId,
@@ -289,11 +367,11 @@ export class Matcher {
 
     // Runaway protection: sustained demand far above the cap is almost always a loop or a misconfigured flow.
     for (const [flowId, n] of dropped) {
-      this.#drops.add(flowId, n);
+      this.#drops.add(flowId, n, this.#now());
       const flow = decisions.find((d) => d.flow.id === flowId)?.flow;
       if (!flow) continue;
       const cap = flow.definition.settings.max_runs_per_hour;
-      const total = this.#drops.total(flowId);
+      const total = this.#drops.total(flowId, this.#now());
       if (total >= cap * this.#opts.runawayFactor && !paused.includes(flowId)) {
         const reason = `auto-paused: ${total} matching events dropped in the last hour by max_runs_per_hour=${cap} (possible loop). Raise the limit or tighten the conditions, then resume.`;
         pauses.push({ flowId, reason });
@@ -302,12 +380,12 @@ export class Matcher {
         this.#log.warn({ flowId, dropped: total, cap }, "flow auto-paused (runaway)");
       }
     }
-    return { runs, evaluations, stats, pauses };
+    return { runs, evaluations, stats, pauses, owners, period };
   }
 
-  // ---- streams ---------------------------------------------------------------
+  // ---- chain event streams ---------------------------------------------------
 
-  async #consume(stream: Exclude<MatcherStream, "reverted">, flows: ActiveFlow[], paused: string[]): Promise<StreamReport> {
+  async #consume(stream: "confirmed" | "head", flows: ActiveFlow[], paused: string[]): Promise<StreamReport> {
     let offset = await this.store.offset(stream);
     if (offset === null) {
       // Fresh start: begin at the current end of the stream — no replay of history into runs.
@@ -358,7 +436,7 @@ export class Matcher {
    * rely on seeing every Transfer of a block together; a split would hide an
    * earlier transfer of the same block from the next batch.
    */
-  async #blockCompleteBatch(stream: Exclude<MatcherStream, "reverted">, offset: number): Promise<ChainEvent[]> {
+  async #blockCompleteBatch(stream: "confirmed" | "head", offset: number): Promise<ChainEvent[]> {
     const size = this.#opts.batchSize;
     const fetch = (after: number, limit: number) => (stream === "confirmed" ? this.store.fetchConfirmed(after, limit) : this.store.fetchHead(after, limit));
     const position = (r: ChainEvent) => (stream === "confirmed" ? (r.confirmedSeq ?? 0) : r.id);
@@ -394,8 +472,10 @@ export class Matcher {
     return { processed: rows.length, ...result };
   }
 
+  // ---- polled chain state ----------------------------------------------------
+
   async #polls(index: FlowIndex, paused: string[]): Promise<PollReport> {
-    const now = Date.now();
+    const now = this.#now();
     const due = index.poll.filter((f) => now - (this.#lastPoll.get(f.id) ?? 0) >= this.#opts.pollIntervalMs);
     if (due.length === 0) return { flows: 0, runs: 0, errors: 0 };
     const cursor = await this.store.confirmedCursor();
@@ -429,5 +509,100 @@ export class Matcher {
       }
     }
     return { flows: due.length, runs: created, errors };
+  }
+
+  // ---- schedules -------------------------------------------------------------
+
+  /**
+   * Eligible times are those after max(last fired time, activation, version
+   * creation): pausing skips the paused period, a new version starts fresh.
+   * Only the latest due time fires (within the grace window); earlier ones
+   * that passed while the matcher was down are recorded once as `missed`.
+   */
+  async #schedules(index: FlowIndex, paused: string[]): Promise<PollReport> {
+    const now = this.#now();
+    const live = new Set<string>();
+    let evaluated = 0;
+    let created = 0;
+    let errors = 0;
+    for (const flow of index.schedule) {
+      const cacheKey = `${flow.id}:${flow.generation}`;
+      live.add(cacheKey);
+      const due = this.#scheduleDue.get(cacheKey);
+      if (due !== undefined && due > now) continue;
+      evaluated++;
+      const module = flow.module as AnyScheduleTrigger;
+      try {
+        const state = await this.store.loadTriggerState(flow.id, flow.version);
+        const lastSlot = typeof state?.last_slot === "string" ? Date.parse(state.last_slot) : Number.NEGATIVE_INFINITY;
+        const baseline = Math.max(lastSlot, flow.activatedAtMs ?? Number.NEGATIVE_INFINITY, flow.versionCreatedAtMs);
+        const latest = module.latest(flow.params, new Date(now));
+        if (!latest || latest.getTime() <= baseline) {
+          const next = module.next(flow.params, new Date(Math.max(baseline, now)));
+          this.#scheduleDue.set(cacheKey, next ? next.getTime() : Number.POSITIVE_INFINITY);
+          continue;
+        }
+
+        let missed = 0;
+        let firstMissed: Date | null = null;
+        for (let slot = module.next(flow.params, new Date(baseline)); slot && slot.getTime() < latest.getTime() && missed < MAX_MISSED_COUNT; slot = module.next(flow.params, slot)) {
+          missed++;
+          firstMissed ??= slot;
+        }
+        const late = now - latest.getTime();
+        const grace = this.#opts.scheduleGraceMs;
+        const outcomes: TriggerOutcome[] = [];
+        if (late <= grace) {
+          outcomes.push({ kind: "match", key: `schedule:${latest.toISOString()}`, payload: module.payload(flow.params, latest, new Date(now)) });
+        } else {
+          missed++;
+          firstMissed ??= latest;
+        }
+        if (firstMissed) {
+          const count = missed >= MAX_MISSED_COUNT ? `${MAX_MISSED_COUNT}+` : String(missed);
+          outcomes.push({
+            kind: "missed",
+            key: `schedule-missed:${firstMissed.toISOString()}`,
+            reason: `${count} scheduled time(s) from ${firstMissed.toISOString()} passed while the scheduler was not running${late > grace ? `; the latest (${latest.toISOString()}) is beyond the ${duration(grace)} grace window` : ""}`,
+            payload: module.payload(flow.params, firstMissed, new Date(now)),
+          });
+        }
+        const batch = await this.#admit(outcomes.map((outcome) => ({ flow, outcome })), paused);
+        const commit = await this.store.commitPoll(flow.id, flow.version, { last_slot: latest.toISOString() }, batch);
+        created += commit.inserted.get(flow.id) ?? 0;
+        const next = module.next(flow.params, latest);
+        this.#scheduleDue.set(cacheKey, next ? next.getTime() : Number.POSITIVE_INFINITY);
+      } catch (err) {
+        errors++;
+        this.#scheduleDue.set(cacheKey, now + 5_000);
+        this.#log.warn({ err, flowId: flow.id }, "schedule trigger failed — retrying in 5 s");
+      }
+    }
+    for (const key of this.#scheduleDue.keys()) if (!live.has(key)) this.#scheduleDue.delete(key);
+    return { flows: evaluated, runs: created, errors };
+  }
+
+  // ---- inbound webhooks ------------------------------------------------------
+
+  async #inbound(index: FlowIndex, paused: string[]): Promise<StreamReport> {
+    // Starts at 0 on a fresh database: requests are explicit user input, never history to skip.
+    const offset = (await this.store.offset("inbound")) ?? 0;
+    const rows = await this.store.fetchInbound(offset, this.#opts.batchSize);
+    if (rows.length === 0) return { processed: 0, runs: 0, behind: false };
+    const flows = new Map(index.inbound.map((f) => [f.id, f]));
+    const decisions: Decision[] = [];
+    for (const row of rows) {
+      // Paused / deleted flows, or flows whose trigger changed: the request does not run.
+      const flow = flows.get(row.flowId);
+      if (!flow) continue;
+      if (flow.activatedAtMs !== null && row.receivedAt.getTime() < flow.activatedAtMs) continue;
+      const outcome = (flow.module as AnyInboundTrigger).match(toInboundView(row), flow.params);
+      if (outcome) decisions.push({ flow, outcome });
+    }
+    const position = rows[rows.length - 1]?.id ?? offset;
+    const batch = await this.#admit(decisions, paused);
+    const result = await this.store.commitBatch("inbound" satisfies MatcherStream, position, batch);
+    const created = [...result.inserted.values()].reduce((a, b) => a + b, 0);
+    return { processed: rows.length, runs: created, behind: rows.length >= this.#opts.batchSize };
   }
 }

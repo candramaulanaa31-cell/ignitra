@@ -67,6 +67,16 @@ export interface FieldIssue {
   readonly message: string;
 }
 
+/** A path below an `object` / `array` field whose shape is not declared (e.g. `body.amount` of an inbound webhook). */
+function insideFreeForm(fields: ReadonlyMap<string, FieldSpec>, path: string): boolean {
+  const parts = path.split(".");
+  for (let i = parts.length - 1; i > 0; i--) {
+    const parent = fields.get(parts.slice(0, i).join("."));
+    if (parent) return parent.type === "object" || parent.type === "array";
+  }
+  return false;
+}
+
 function walk(node: ConditionNode, path: string, fields: ReadonlyMap<string, FieldSpec>, issues: FieldIssue[]): void {
   if (isConditionGroup(node)) {
     const kind = "all" in node ? "all" : "any";
@@ -75,6 +85,7 @@ function walk(node: ConditionNode, path: string, fields: ReadonlyMap<string, Fie
     return;
   }
   const spec = fields.get(node.field);
+  if (!spec && insideFreeForm(fields, node.field)) return; // user data: shape unknown until runtime
   if (!spec) {
     const near = [...fields.keys()].filter((k) => k.split(".").pop() === node.field.split(".").pop() || k.startsWith(node.field.split(".")[0] ?? ""));
     issues.push({
