@@ -21,7 +21,8 @@ import {
   users,
   type DbHandle,
 } from "@ignitra/db";
-import { FlowValidationError, PlanLimitError, createFlow, ensureUser, setFlowStatus, validateFlowDefinition, type FlowServiceDeps } from "./flows";
+import { createActionModules } from "@ignitra/actions";
+import { FlowValidationError, PlanLimitError, createFlow, enforcePlanFeatures, ensureUser, setFlowStatus, validateFlowDefinition, type FlowServiceDeps } from "./flows";
 import { Matcher, type MatcherOptions } from "./matcher/matcher";
 import { TokenInfo } from "./tokens";
 import { createTriggerModules, inboundWebhookTrigger, scheduleTrigger, stateChangeTrigger, type StateChangeState } from "./triggers/index";
@@ -218,6 +219,13 @@ function matcher(options: MatcherOptions = {}): Matcher {
 const flowRuns = (flowId: string) => h.db.select().from(runs).where(eq(runs.flowId, flowId));
 const evaluations = (flowId: string) => h.db.select().from(flowEvaluations).where(eq(flowEvaluations.flowId, flowId));
 
+/** SCHEDULE is a Builder feature (spec §10). */
+async function builder(address: string): Promise<string> {
+  const id = await ensureUser(h.db, address);
+  await h.db.update(users).set({ plan: "builder" }).where(eq(users.id, id));
+  return id;
+}
+
 /** Pins activation and version time, so schedule eligibility is deterministic. */
 async function pinTimes(flowId: string, at: number): Promise<void> {
   await h.db.update(flows).set({ activatedAt: new Date(at) }).where(eq(flows.id, flowId));
@@ -229,7 +237,7 @@ describe("matcher: schedules", () => {
   const quarterHourly = { trigger: { type: "SCHEDULE", params: { cron: "*/15 * * * *", timezone: "UTC" } }, actions: hook };
 
   it("fires each scheduled time once; after downtime only the latest fires and the rest are recorded as missed", async () => {
-    const owner = await ensureUser(h.db, addr(0xa1));
+    const owner = await builder(addr(0xa1));
     const { flowId } = await createFlow(deps, { ownerId: owner, name: "Quarter-hourly", definition: quarterHourly, activate: true });
     await pinTimes(flowId, T0);
     let clock = T0 + 60_000;
@@ -263,7 +271,7 @@ describe("matcher: schedules", () => {
   });
 
   it("does not fire a time that is older than the grace window", async () => {
-    const owner = await ensureUser(h.db, addr(0xa2));
+    const owner = await builder(addr(0xa2));
     const { flowId } = await createFlow(deps, { ownerId: owner, name: "Late", definition: quarterHourly, activate: true });
     await pinTimes(flowId, T0);
     const m = matcher({ now: () => Date.UTC(2026, 10, 7, 0, 21, 0), scheduleGraceMs: 60_000 });
@@ -273,7 +281,7 @@ describe("matcher: schedules", () => {
   });
 
   it("skips times that passed while the flow was paused (eligibility starts at re-activation)", async () => {
-    const owner = await ensureUser(h.db, addr(0xa3));
+    const owner = await builder(addr(0xa3));
     const { flowId } = await createFlow(deps, { ownerId: owner, name: "Paused", definition: quarterHourly, activate: true });
     await pinTimes(flowId, T0);
     await h.db.update(flows).set({ activatedAt: new Date(Date.UTC(2026, 10, 7, 1, 7, 0)) }).where(eq(flows.id, flowId)); // resumed 01:07
@@ -371,14 +379,30 @@ describe("plan limits", () => {
     await setFlowStatus(deps, ids[0] as string, "active");
   });
 
-  it("limits how often schedules may fire, per plan", async () => {
+  it("pauses flows that use features a downgraded plan does not include", async () => {
+    const owner = await builder(addr(0xc5));
+    const scheduled = await createFlow(deps, { ownerId: owner, name: "Daily", definition: { trigger: { type: "SCHEDULE", params: { cron: "0 9 * * *" } }, actions: hook }, activate: true });
+    const hooked = await createFlow(deps, { ownerId: owner, name: "Hook", definition: { trigger: { type: "INBOUND_WEBHOOK", params: {} }, actions: hook }, activate: true });
+    expect(await enforcePlanFeatures(h.db, owner)).toEqual([]); // still on builder
+    await h.db.update(users).set({ plan: "free" }).where(eq(users.id, owner));
+    expect(await enforcePlanFeatures(h.db, owner)).toEqual([scheduled.flowId]);
+    const rows = await h.db.select().from(flows).where(eq(flows.ownerId, owner));
+    expect(rows.find((f) => f.id === scheduled.flowId)).toMatchObject({ status: "paused", statusReason: "paused: the free plan does not include SCHEDULE" });
+    expect(rows.find((f) => f.id === hooked.flowId)?.status).toBe("active");
+    expect((await h.db.select().from(ownerNotifications).where(eq(ownerNotifications.userId, owner))).map((n) => n.kind)).toEqual(["flow_plan_paused"]);
+  });
+
+  it("keeps Builder features (schedule, email, Sheets) off the free plan", async () => {
     const owner = await ensureUser(h.db, addr(0xc4));
     const schedule = (cron: string) => ({ trigger: { type: "SCHEDULE", params: { cron } }, actions: hook });
-    const error = await validateFlowDefinition(schedule("*/5 * * * *"), deps, owner).catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(FlowValidationError);
-    expect((error as FlowValidationError).issues[0]?.message).toMatch(/free plan allows schedules at most every 15 minutes; this one fires every 5 minute/);
-    await validateFlowDefinition(schedule("*/15 * * * *"), deps, owner);
+    const issues = async (def: unknown) =>
+      ((await validateFlowDefinition(def, deps, owner).catch((e: unknown) => e)) as FlowValidationError).issues?.map((i) => `${i.path}: ${i.message}`) ?? [];
+    expect(await issues(schedule("0 9 * * *"))).toEqual(["trigger.type: SCHEDULE needs the builder plan (you are on free)"]);
+    const withActions = { db: h.db, chainId: 4663, triggers: deps.triggers, prepare: deps.prepare, actions: createActionModules() };
+    const def = { trigger: { type: "INBOUND_WEBHOOK", params: {} }, actions: [{ step_id: "mail", type: "EMAIL", params: { connection_id: `conn_${"0".repeat(26)}`, subject: "s", body: "b" } }] };
+    const error = (await validateFlowDefinition(def, withActions, owner).catch((e: unknown) => e)) as FlowValidationError;
+    expect(error.issues.map((i) => i.message)).toContain("EMAIL needs the builder plan (you are on free)");
     await h.db.update(users).set({ plan: "builder" }).where(eq(users.id, owner));
-    await validateFlowDefinition(schedule("* * * * *"), deps, owner);
+    await validateFlowDefinition(schedule("* * * * *"), deps, owner); // minute resolution on paid plans
   });
 });

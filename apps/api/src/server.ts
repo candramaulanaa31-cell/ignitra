@@ -4,15 +4,17 @@ import type { Keyring, Logger } from "@ignitra/core/server";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import type { AbiRegistry, ChainReader } from "@ignitra/chain";
-import { FlowNotFoundError, FlowValidationError, PlanLimitError, createTriggerModules, type TriggerModuleRegistry } from "@ignitra/engine";
-import { createActionModules, createSafeHttp } from "@ignitra/actions";
+import { FlowNotFoundError, FlowValidationError, PlanLimitError, TokenInfo, createTriggerModules, type TriggerModuleRegistry } from "@ignitra/engine";
+import { createActionModules, createSafeHttp, type EmailConfig, type GoogleConfig } from "@ignitra/actions";
+import { planFor } from "@ignitra/core";
 import { chainSyncStatus, type DbHandle } from "@ignitra/db";
 import { authenticate, type AuthOptions } from "./auth";
 import type { ApiContext } from "./context";
 import { ApiError } from "./http";
 import { registerAccountRoutes } from "./routes/account";
 import { registerAuthRoutes } from "./routes/auth";
-import { registerConnectionRoutes } from "./routes/connections";
+import { registerBuilderRoutes } from "./routes/builder";
+import { registerConnectionRoutes, registerGoogleCallback } from "./routes/connections";
 import { registerFlowRoutes } from "./routes/flows";
 import { registerHookRoutes } from "./routes/hooks";
 
@@ -44,8 +46,15 @@ export interface ServerDeps {
   readonly telegramApiBase?: string;
   readonly inboundRatePerMinute?: number;
   readonly inboundDailyLimit?: number;
-  /** Behind a reverse proxy: take the client IP from X-Forwarded-For (rate limits). */
-  readonly trustProxy?: boolean;
+  /** Behind a reverse proxy: take the client IP from X-Forwarded-For (true, or the proxy addresses). */
+  readonly trustProxy?: boolean | string[];
+  readonly email?: EmailConfig | null;
+  readonly google?: GoogleConfig | null;
+  /** The web app URL (OAuth returns there). Default: the first CORS origin. */
+  readonly webUrl?: string;
+  readonly confirmationDepth?: number;
+  /** A TEST run was queued (single process: wake the runner). */
+  readonly onRunQueued?: () => void;
   /** Called after an inbound webhook request is stored (single process: wake the matcher). */
   readonly onInboundEvent?: () => void;
   readonly now?: () => number;
@@ -59,6 +68,7 @@ function actionCatalog(registry: ActionRegistry) {
     description: a.description,
     connection_type: a.connectionType,
     connection_optional: a.connectionOptional ?? false,
+    min_plan: planFor(a.type),
     params_schema: z.toJSONSchema(a.paramsSchema, { io: "input", unrepresentable: "any" }),
     output_fields: a.outputFields,
   }));
@@ -80,6 +90,7 @@ function triggerCatalog(registry: TriggerModuleRegistry) {
       label: m.label,
       description: m.description,
       supports_fast: m.supportsFast,
+      min_plan: planFor(m.type),
       params_schema: z.toJSONSchema(m.paramsSchema, { io: "input", unrepresentable: "any" }),
       fields,
     };
@@ -155,6 +166,13 @@ function context(deps: ServerDeps, triggers: TriggerModuleRegistry, actions: Act
     actions,
     flowDeps: { db: deps.db.db, chainId: deps.chain.id, triggers, actions, prepare: { abis: deps.abis ?? null } },
     reader: deps.reader ?? null,
+    tokens: deps.reader ? new TokenInfo(deps.reader) : null,
+    abis: deps.abis ?? null,
+    confirmationDepth: deps.confirmationDepth ?? 20,
+    email: deps.email ?? null,
+    google: deps.google ?? null,
+    webUrl: (deps.webUrl ?? corsOrigins[0] ?? "http://localhost:3000").replace(/\/+$/, ""),
+    onRunQueued: deps.onRunQueued ?? (() => {}),
     keyring: deps.keyring ?? null,
     webhookMaster: deps.webhookMaster ?? null,
     http: deps.http ?? createSafeHttp({ allowPrivate: allowPrivateOutbound }),
@@ -184,7 +202,8 @@ export async function buildServer(deps: ServerDeps) {
     trustProxy: deps.trustProxy ?? false,
   });
   const triggers = deps.triggers ?? createTriggerModules();
-  const actions = deps.actions ?? createActionModules(deps.telegramApiBase ? { telegramApiBase: deps.telegramApiBase } : {});
+  const actions =
+    deps.actions ?? createActionModules({ ...(deps.telegramApiBase ? { telegramApiBase: deps.telegramApiBase } : {}), email: deps.email ?? null, google: deps.google ?? null });
   const ctx = context(deps, triggers, actions);
   app.decorateRequest("auth", null);
 
@@ -262,11 +281,13 @@ export async function buildServer(deps: ServerDeps) {
 
   registerAuthRoutes(app, ctx);
   registerHookRoutes(app, ctx);
+  registerGoogleCallback(app, ctx);
   await app.register(async (scope) => {
     scope.addHook("onRequest", authenticate({ db: ctx.db, corsOrigins: ctx.corsOrigins, now: ctx.now }));
     registerAccountRoutes(scope, ctx);
     registerConnectionRoutes(scope, ctx);
     registerFlowRoutes(scope, ctx);
+    registerBuilderRoutes(scope, ctx);
   });
 
   return app;

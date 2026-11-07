@@ -170,7 +170,7 @@ describe("flow lifecycle", () => {
       activate: true,
       definition: {
         trigger: { type: "BALANCE_THRESHOLD", params: { wallet: addr(0x7), threshold: "2" } },
-        actions: [{ step_id: "mail", type: "EMAIL", params: {} }],
+        actions: [{ step_id: "hook", type: "WEBHOOK", params: { url: "https://example.com/hook" } }],
       },
     });
     expect(await h.db.select().from(watches)).toHaveLength(0);

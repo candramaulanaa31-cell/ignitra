@@ -360,6 +360,9 @@ importers:
       react-dom:
         specifier: 'catalog:'
         version: 19.3.1(react@19.3.1)
+      viem:
+        specifier: 'catalog:'
+        version: 2.57.16(typescript@6.0.3)(zod@4.6.7)
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -373,6 +376,9 @@ importers:
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 5.1.0(@types/node@24.19.2)(vite@8.3.5(@types/node@24.19.2)(tsx@4.23.15))
 
   packages/actions:
     dependencies:

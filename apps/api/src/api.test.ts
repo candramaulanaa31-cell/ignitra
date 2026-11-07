@@ -324,7 +324,8 @@ describe("flows", () => {
     expect(res.statusCode).toBe(422);
     expect(res.json().error).toMatchObject({ code: "invalid_flow", issues: [{ path: "actions", message: expect.any(String) }] });
     const sched = await createFlowVia(me.token, { trigger: { type: "SCHEDULE", params: { cron: "*/5 * * * *" } }, actions: hookFlow.actions });
-    expect(sched.json().error.issues[0].message).toMatch(/free plan allows schedules at most every 15 minutes/);
+    expect(sched.json().error.issues[0].message).toBe("SCHEDULE needs the builder plan (you are on free)");
+    await h.db.update(users).set({ plan: "builder" }).where(eq(users.id, me.userId)); // SCHEDULE is a Builder feature
     const dry = await app.inject({ method: "POST", url: "/v1/flows/validate", headers: bearer(me.token), payload: { definition: { trigger: { type: "SCHEDULE", params: { cron: "0 9 * * 1-5" } }, actions: hookFlow.actions } } });
     expect(dry.json().data.definition.trigger.params).toEqual({ cron: "0 9 * * 1-5", timezone: "Asia/Jakarta" });
     expect(dry.json().data.trigger_fields.map((f: { path: string }) => f.path)).toContain("scheduled_at_local");

@@ -1,8 +1,10 @@
 import { and, eq, ne, sql } from "drizzle-orm";
 import {
+  evaluateConditions,
   flowDefinitionSchema,
   newId,
   normalizeAddress,
+  planFor,
   planLimits,
   validateConditionFields,
   validateTemplate,
@@ -12,7 +14,7 @@ import {
   type FlowStatus,
   type Plan,
 } from "@ignitra/core";
-import { connections, flowVersions, flows, triggerState, users, watches, type Database, type Tx } from "@ignitra/db";
+import { connections, flowVersions, flows, ownerNotifications, runs, triggerState, users, watches, type Database, type Run, type Tx } from "@ignitra/db";
 import { ensureInboundHook } from "./hooks";
 import type { PrepareContext, TriggerModuleRegistry } from "./types";
 
@@ -119,9 +121,19 @@ export async function validateFlowDefinition(input: unknown, deps: ValidationDep
   if (def.settings.mode === "fast" && !module.supportsFast) {
     issues.push({ path: "settings.mode", message: `${def.trigger.type} needs confirmed data and does not support fast mode` });
   }
-  if (module.minIntervalMs && deps.db && ownerId) {
+  const plan = deps.db && ownerId ? await ownerPlan(deps.db, ownerId) : null;
+  if (plan) {
+    // Features of higher plans (spec §10: Builder adds Sheets, email and schedule).
+    const limits = planLimits(plan);
+    if (limits.lockedTriggers.includes(def.trigger.type)) {
+      issues.push({ path: "trigger.type", message: `${def.trigger.type} needs the ${planFor(def.trigger.type)} plan (you are on ${plan})` });
+    }
+    def.actions.forEach((a, i) => {
+      if (limits.lockedActions.includes(a.type)) issues.push({ path: `actions.${i}.type`, message: `${a.type} needs the ${planFor(a.type)} plan (you are on ${plan})` });
+    });
+  }
+  if (module.minIntervalMs && plan) {
     const interval = module.minIntervalMs(prepared);
-    const plan = await ownerPlan(deps.db, ownerId);
     const minMinutes = planLimits(plan).minScheduleMinutes;
     if (interval !== null && interval < minMinutes * 60_000) {
       issues.push({
@@ -170,11 +182,16 @@ async function validateActions(
       issues.push({ path: `${at}.params.connection_id`, message: `${step.type} needs a ${action.connectionType} connection` });
     }
     if (connectionId && deps.db && ownerId) {
-      const [conn] = await deps.db.select({ ownerId: connections.ownerId, type: connections.type }).from(connections).where(eq(connections.id, connectionId));
+      const [conn] = await deps.db
+        .select({ ownerId: connections.ownerId, type: connections.type, metadata: connections.metadata })
+        .from(connections)
+        .where(eq(connections.id, connectionId));
       if (!conn || conn.ownerId !== ownerId) {
         issues.push({ path: `${at}.params.connection_id`, message: `connection ${connectionId} not found` });
       } else if (action.connectionType && conn.type !== action.connectionType) {
         issues.push({ path: `${at}.params.connection_id`, message: `connection ${connectionId} is ${conn.type}; ${step.type} needs ${action.connectionType}` });
+      } else if (conn.metadata.verified === false) {
+        issues.push({ path: `${at}.params.connection_id`, message: `${String(conn.metadata.address ?? connectionId)} is not verified yet (enter the code we emailed)` });
       }
     }
     for (const t of action.templates(params)) {
@@ -269,6 +286,80 @@ export async function updateFlowDefinition(deps: FlowServiceDeps, flowId: string
     if (definition.trigger.type === "INBOUND_WEBHOOK") await ensureInboundHook(tx, flowId);
     return { version, definition };
   });
+}
+
+/** TEST runs a user may start per hour (they send real messages). */
+export const TEST_RUNS_PER_HOUR = 30;
+
+export class TestRunLimitError extends Error {
+  constructor() {
+    super(`at most ${TEST_RUNS_PER_HOUR} test runs per hour`);
+    this.name = "TestRunLimitError";
+  }
+}
+
+/**
+ * "Test flow": queues a TEST run of the current version with a sample payload.
+ * Actions always execute (that is the point of a test); the conditions are
+ * evaluated and recorded so the user sees whether a real event would have run.
+ * TEST runs are never metered, never count towards the hourly cap or flow
+ * stats, run on paused flows, and every action labels what it sends.
+ */
+export async function queueTestRun(db: Database, input: { flowId: string; ownerId: string; payload: Record<string, unknown> }): Promise<{ run: Run; conditionsPassed: boolean }> {
+  const current = await getCurrentDefinition(db, input.flowId);
+  if (current.ownerId !== input.ownerId) throw new FlowNotFoundError(input.flowId);
+  const [recent] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(runs)
+    .innerJoin(flows, eq(flows.id, runs.flowId))
+    .where(and(eq(flows.ownerId, input.ownerId), eq(runs.isTest, true), sql`${runs.createdAt} > now() - interval '1 hour'`));
+  if (Number(recent?.n ?? 0) >= TEST_RUNS_PER_HOUR) throw new TestRunLimitError();
+  const evaluation = evaluateConditions(current.definition.conditions, input.payload);
+  const id = newId("run");
+  const [run] = await db
+    .insert(runs)
+    .values({
+      id,
+      flowId: input.flowId,
+      flowVersion: current.version,
+      idempotencyKey: `test:${id}`,
+      isTest: true,
+      triggerType: current.definition.trigger.type,
+      triggerEvent: input.payload,
+      conditionsResult: evaluation.results as unknown[],
+      status: "queued",
+    })
+    .returning();
+  if (!run) throw new Error("test run insert failed");
+  return { run, conditionsPassed: evaluation.passed };
+}
+
+/**
+ * After a plan change: pauses the owner's active flows that use triggers or actions
+ * the plan does not include, telling the owner why. Returns the paused flow ids.
+ */
+export async function enforcePlanFeatures(db: Database, ownerId: string): Promise<string[]> {
+  const plan = await ownerPlan(db, ownerId);
+  const limits = planLimits(plan);
+  const active = await db
+    .select({ id: flows.id, name: flows.name, definition: flowVersions.definition })
+    .from(flows)
+    .innerJoin(flowVersions, and(eq(flowVersions.flowId, flows.id), eq(flowVersions.version, flows.currentVersion)))
+    .where(and(eq(flows.ownerId, ownerId), eq(flows.status, "active")));
+  const paused: string[] = [];
+  for (const f of active) {
+    const locked = [f.definition.trigger.type, ...f.definition.actions.map((a) => a.type)].filter(
+      (t) => (limits.lockedTriggers as readonly string[]).includes(t) || (limits.lockedActions as readonly string[]).includes(t),
+    );
+    if (locked.length === 0) continue;
+    const reason = `paused: the ${plan} plan does not include ${[...new Set(locked)].join(", ")}`;
+    await db.transaction(async (tx) => {
+      await tx.update(flows).set({ status: "paused", statusReason: reason, updatedAt: sql`now()` }).where(eq(flows.id, f.id));
+      await tx.insert(ownerNotifications).values({ id: newId("notification"), userId: ownerId, flowId: f.id, kind: "flow_plan_paused", message: `"${f.name}" was ${reason}. Upgrade, or change the flow and resume it.` });
+    });
+    paused.push(f.id);
+  }
+  return paused;
 }
 
 export async function renameFlow(db: Database, flowId: string, name: string): Promise<string> {

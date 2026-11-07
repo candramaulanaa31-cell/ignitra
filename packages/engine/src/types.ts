@@ -123,6 +123,8 @@ export interface PollTriggerModule<P = unknown, S = unknown> extends TriggerModu
   readonly kind: "poll";
   /** `state: null` = leave the stored state unchanged (nothing new, or the sample was undetermined). */
   poll(input: PollInput<P, S>, rt: TriggerRuntime): Promise<{ state: S | null; outcomes: TriggerOutcome[] }>;
+  /** Builder / "Test flow" sample built from the CURRENT on-chain state (null when there is nothing to show). */
+  sample?(params: P, rt: TriggerRuntime, block: BlockHeader): Promise<{ payload: Payload; note: string } | null>;
 }
 
 /** Clock-driven trigger. The matcher keeps the last fired slot in trigger_state. */

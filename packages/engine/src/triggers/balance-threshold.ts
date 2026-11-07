@@ -59,6 +59,35 @@ export const balanceThresholdTrigger: PollTriggerModule<BalanceThresholdParams, 
   paramsSchema: balanceThresholdParams,
   fields: () => FIELDS,
 
+  async sample(p, rt, block) {
+    const native = p.asset === "native";
+    const meta = native ? null : await rt.tokens.meta(p.asset as Exclude<typeof p.asset, "native">);
+    const decimals = native ? rt.chain.nativeCurrency.decimals : (meta?.decimals ?? null);
+    const read = native ? await rt.tokens.nativeBalancesAt([p.wallet], block.number) : await rt.tokens.balancesAt(p.asset as Exclude<typeof p.asset, "native">, [p.wallet], block.number);
+    const value = read.get(p.wallet);
+    if (value === null || value === undefined) return null;
+    const thresholdRaw = toBaseUnits(p.threshold, decimals);
+    const side = thresholdRaw !== null && value < thresholdRaw ? "below" : "above";
+    const decimal = toDecimalUnits(value, decimals);
+    return {
+      note: `current balance (${formatDisplay(decimal) ?? value.toString()}, ${side} ${p.threshold}): the flow runs when it crosses the threshold`,
+      payload: {
+        ...blockEvidence(block, rt.chain, p.wallet),
+        wallet: p.wallet,
+        asset: p.asset,
+        token: { address: native ? null : p.asset, symbol: native ? rt.chain.nativeCurrency.symbol : (meta?.symbol ?? null), decimals },
+        threshold: p.threshold,
+        direction: side,
+        balance_before: value.toString(),
+        balance_before_decimal: decimal,
+        balance_after: value.toString(),
+        balance_after_decimal: decimal,
+        balance_after_formatted: formatDisplay(decimal),
+        previous_block: block.number,
+      },
+    };
+  },
+
   async poll({ params: p, state, block }, rt) {
     if (state && block.number <= state.block) return { state: null, outcomes: [] };
 

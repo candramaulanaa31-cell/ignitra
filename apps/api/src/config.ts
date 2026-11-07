@@ -2,18 +2,10 @@ import { z } from "zod";
 import { ROBINHOOD_CHAIN_ID, type ChainConfig } from "@ignitra/core";
 import { apiEnvSchema, encryptionEnvSchema, envVar, keyringFromEnv, parseEnv, type Logger } from "@ignitra/core/server";
 import { AbiRegistry, BlockscoutAbiFetcher, type ChainReader } from "@ignitra/chain";
-import { runnerEnvShape } from "@ignitra/actions";
+import { emailFromEnv, googleFromEnv, runnerEnvShape } from "@ignitra/actions";
 import type { DbHandle } from "@ignitra/db";
 import { DbAbiStore } from "@ignitra/engine";
 import { buildServer, type ServerDeps } from "./server";
-
-const flag = (fallback: boolean) =>
-  envVar.withDefault(
-    z
-      .enum(["true", "false", "1", "0"])
-      .default(fallback ? "true" : "false")
-      .transform((v) => v === "true" || v === "1"),
-  );
 
 const list = (fallback: string) =>
   envVar.withDefault(
@@ -34,8 +26,18 @@ export const apiEnvShape = {
   /** SIWE `domain` values accepted (host[:port]). Default: the hosts of CORS_ORIGINS. */
   SIWE_DOMAINS: envVar.optional(z.string().transform((v) => v.split(",").map((s) => s.trim()).filter(Boolean))),
   SESSION_TTL_HOURS: envVar.withDefault(envVar.int(1, 24 * 90).default(24 * 7)),
-  /** Behind a reverse proxy: trust X-Forwarded-For for client IPs (rate limits). */
-  TRUST_PROXY: flag(false),
+  /**
+   * Behind a reverse proxy (the web app proxies /api): trust X-Forwarded-For for client IPs
+   * (rate limits). "true", "false", or the proxy's addresses, e.g. "127.0.0.1,::1".
+   */
+  TRUST_PROXY: envVar.withDefault(
+    z
+      .string()
+      .default("false")
+      .transform((v): boolean | string[] => (v === "true" || v === "1" ? true : v === "false" || v === "0" ? false : v.split(",").map((s) => s.trim()).filter(Boolean))),
+  ),
+  /** The web app (OAuth sends the browser back there). Default: the first CORS origin. */
+  WEB_URL: envVar.optional(envVar.httpUrl),
   /** Requests per minute accepted per inbound webhook URL. */
   INBOUND_RATE_PER_MINUTE: envVar.withDefault(envVar.int(1, 100_000).default(60)),
   /** Requests stored per inbound webhook URL per 24 h (bounds storage; bodies are up to 64 KB). */
@@ -64,12 +66,22 @@ type ApiEnvSubset = Pick<
   | "EXPLORER_API_URL"
   | "EXPLORER_API_KEY"
   | "CHAIN_ID"
+  | "EMAIL_PROVIDER"
+  | "EMAIL_API_KEY"
+  | "EMAIL_FROM"
+  | "EMAIL_API_URL"
+  | "GOOGLE_CLIENT_ID"
+  | "GOOGLE_CLIENT_SECRET"
+  | "GOOGLE_REDIRECT_URI"
+  | "GOOGLE_AUTH_URL"
+  | "GOOGLE_TOKEN_URL"
+  | "GOOGLE_SHEETS_URL"
 >;
 
 /** Builds the API from env: secrets, CORS / SIWE domains, ABI lookups for save-time event/function resolution. */
 export async function createApiFromEnv(
   env: ApiEnvSubset,
-  deps: { db: DbHandle; chain: ChainConfig; logger: Logger; version: string; reader: ChainReader | null; onInboundEvent?: () => void },
+  deps: { db: DbHandle; chain: ChainConfig; logger: Logger; version: string; reader: ChainReader | null; onInboundEvent?: () => void; onRunQueued?: () => void },
 ) {
   const keyring = env.ENCRYPTION_KEY
     ? keyringFromEnv(parseEnv(encryptionEnvSchema, { ENCRYPTION_KEY: env.ENCRYPTION_KEY, ENCRYPTION_KEY_ID: env.ENCRYPTION_KEY_ID, ENCRYPTION_KEYS_PREVIOUS: env.ENCRYPTION_KEYS_PREVIOUS }))
@@ -83,6 +95,10 @@ export async function createApiFromEnv(
   if (!keyring) deps.logger.warn("ENCRYPTION_KEY not set — POST /v1/connections is disabled");
   if (!env.WEBHOOK_SIGNING_SECRET) deps.logger.warn("WEBHOOK_SIGNING_SECRET not set — INBOUND_WEBHOOK flows and /v1/me/webhook-secret are disabled");
   const publicUrl = env.API_PUBLIC_URL ?? `http://${env.API_HOST}:${env.API_PORT}`;
+  const email = emailFromEnv(env);
+  const google = googleFromEnv(env);
+  if (!email) deps.logger.warn("EMAIL_* not set — email connections (verification codes) are disabled");
+  if (!google) deps.logger.warn("GOOGLE_* not set — Google Sheets connections are disabled");
   const options: ServerDeps = {
     db: deps.db,
     chain: deps.chain,
@@ -106,6 +122,10 @@ export async function createApiFromEnv(
     inboundDailyLimit: env.INBOUND_DAILY_LIMIT,
     trustProxy: env.TRUST_PROXY,
     ...(deps.onInboundEvent ? { onInboundEvent: deps.onInboundEvent } : {}),
+    ...(deps.onRunQueued ? { onRunQueued: deps.onRunQueued } : {}),
+    ...(env.WEB_URL ? { webUrl: env.WEB_URL } : {}),
+    email,
+    google,
   };
   return { app: await buildServer(options), abis, publicUrl };
 }

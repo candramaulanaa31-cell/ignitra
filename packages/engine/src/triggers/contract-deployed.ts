@@ -66,6 +66,19 @@ export const contractDeployedTrigger: PollTriggerModule<ContractDeployedParams, 
   paramsSchema: contractDeployedParams,
   fields: () => FIELDS,
 
+  async sample(p, rt, block) {
+    const nonce = await rt.reader.getTransactionCount(p.deployer, block.number);
+    for (let n = nonce - 1; n >= Math.max(0, nonce - MAX_NONCES_PER_POLL); n--) {
+      const contract = normalizeAddress(getContractAddress({ from: p.deployer, nonce: BigInt(n), opcode: "CREATE" }));
+      if ((await rt.reader.getCode(contract, block.number)) === "0x") continue;
+      return {
+        note: `the latest contract this deployer created (nonce ${n}); creation block not looked up for samples`,
+        payload: { ...blockEvidence(block, rt.chain, contract), deployer: p.deployer, contract, nonce: n, creation_block: null, creation_tx: null, creation_tx_url: null },
+      };
+    }
+    return null;
+  },
+
   async poll({ params: p, state, block }, rt) {
     const nonce = await rt.reader.getTransactionCount(p.deployer, block.number);
     if (!state) return { state: { nonce, block: block.number }, outcomes: [] };

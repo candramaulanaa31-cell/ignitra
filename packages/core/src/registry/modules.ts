@@ -80,7 +80,7 @@ export interface ActionConnection {
   readonly secret: Readonly<Record<string, unknown>>;
 }
 
-export type TemplateEscapeMode = "none" | "html";
+export type TemplateEscapeMode = "none" | "html" | "json" | "sheets";
 
 export interface PushMessage {
   readonly title: string;
@@ -109,6 +109,7 @@ export interface ActionContext {
   readonly runIdempotencyKey: string;
   /** 1-based attempt of this step. */
   readonly attempt: number;
+  /** TEST run ("Test flow" with sample data): actions label what they send (e.g. a "[TEST]" prefix). */
   readonly isTest: boolean;
   readonly signal: AbortSignal;
   /** Trigger payload (`trigger.*`) of the run. */

@@ -62,6 +62,24 @@ export function flowView(f: Flow, definition: FlowDefinition, stats: FlowStats |
   };
 }
 
+const short = (v: string) => (/^0x[0-9a-f]{12,}$/i.test(v) ? `${v.slice(0, 6)}…${v.slice(-4)}` : v);
+
+/** One line describing the occurrence, for run lists (the full payload is in the trace). */
+export function eventSummary(ev: Record<string, unknown>): string | null {
+  const token = (ev.token ?? null) as { symbol?: unknown } | null;
+  const symbol = typeof token?.symbol === "string" ? ` ${token.symbol}` : "";
+  if (typeof ev.holder === "string") return `new holder ${short(ev.holder)}${typeof ev.amount_formatted === "string" ? ` · ${ev.amount_formatted}${symbol}` : ""}`;
+  if (typeof ev.amount_formatted === "string") return `${ev.amount_formatted}${symbol}${typeof ev.from === "string" && typeof ev.to === "string" ? ` · ${short(ev.from)} → ${short(ev.to)}` : ""}`;
+  if (typeof ev.scheduled_at_local === "string") return ev.scheduled_at_local;
+  if (ev.body !== undefined) return JSON.stringify(ev.body).slice(0, 80);
+  if (ev.current !== undefined) return `${JSON.stringify(ev.previous ?? null).slice(0, 30)} → ${JSON.stringify(ev.current).slice(0, 30)}`;
+  if (typeof ev.balance_after_formatted === "string") return `balance ${ev.balance_after_formatted}${symbol} (${String(ev.direction ?? "")})`;
+  if (typeof ev.contract === "string" && typeof ev.deployer === "string") return `deployed ${short(ev.contract)}`;
+  const e = ev.event as { name?: unknown } | undefined;
+  if (typeof e?.name === "string") return `${e.name}${typeof ev.tx_hash === "string" ? ` · ${short(ev.tx_hash)}` : ""}`;
+  return typeof ev.tx_hash === "string" ? short(ev.tx_hash) : null;
+}
+
 export function runView(r: Run, steps?: readonly RunStep[]) {
   return {
     id: r.id,
@@ -78,6 +96,8 @@ export function runView(r: Run, steps?: readonly RunStep[]) {
     next_attempt_at: iso(r.nextAttemptAt),
     reverted_at: iso(r.revertedAt),
     revert_reason: r.revertReason,
+    summary: eventSummary(r.triggerEvent),
+    tx_hash: typeof r.triggerEvent.tx_hash === "string" ? r.triggerEvent.tx_hash : null,
     ...(steps
       ? {
           trigger_event: r.triggerEvent,

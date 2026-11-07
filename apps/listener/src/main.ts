@@ -84,6 +84,8 @@ await runService(logger, async () => {
         reader,
         // Inbound webhook stored: match it now instead of at the next matcher tick.
         onInboundEvent: () => matcherRuntime?.wakeup.notify(),
+        // "Test flow" queued a TEST run: execute it now.
+        onRunQueued: () => runner?.wakeup.notify(),
       })
     : null;
 

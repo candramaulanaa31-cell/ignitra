@@ -52,7 +52,7 @@ export const webPushAction: ActionDefinition<WebPushParams> = {
     if (!ctx.push) return { status: "failed", retryable: false, error: "Web Push is not configured on the runner (VAPID keys missing)" };
     const url = p.url ? ctx.render(p.url) : undefined;
     const message = {
-      title: ctx.render(p.title),
+      title: `${ctx.isTest ? "[TEST] " : ""}${ctx.render(p.title)}`,
       body: ctx.render(p.body),
       ...(url && /^https:\/\//.test(url) ? { url } : {}),
       tag: p.tag ?? ctx.flowId,

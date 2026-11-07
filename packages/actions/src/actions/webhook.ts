@@ -55,7 +55,7 @@ export function resolveWebhookTarget(p: WebhookParams, ctx: Pick<ActionContext, 
 }
 
 /** Delivers one signed envelope and maps the outcome (shared by actions and run.reverted notices). */
-export async function deliverWebhook(http: SafeHttpClient, target: WebhookTarget, event: string, idempotencyKey: string, envelope: Record<string, unknown>): Promise<ActionResult> {
+export async function deliverWebhook(http: SafeHttpClient, target: WebhookTarget, event: string, idempotencyKey: string, envelope: Record<string, unknown>, opts: { test?: boolean } = {}): Promise<ActionResult> {
   const body = JSON.stringify(envelope);
   const timestamp = Math.floor(Date.now() / 1000);
   const delivery = randomUUID();
@@ -71,6 +71,7 @@ export async function deliverWebhook(http: SafeHttpClient, target: WebhookTarget
         [WEBHOOK_HEADERS.idempotencyKey]: idempotencyKey,
         [WEBHOOK_HEADERS.delivery]: delivery,
         [WEBHOOK_HEADERS.event]: event,
+        ...(opts.test ? { "x-ignitra-test": "true" } : {}),
       },
       body,
     });
@@ -135,6 +136,6 @@ export const webhookAction: ActionDefinition<WebhookParams> = {
       attempt: ctx.attempt,
       trigger: ctx.trigger,
       sent_at: new Date().toISOString(),
-    });
+    }, { test: ctx.isTest });
   },
 };

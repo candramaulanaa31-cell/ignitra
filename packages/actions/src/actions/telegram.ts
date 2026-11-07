@@ -126,6 +126,7 @@ export function createTelegramAction(opts: { apiBase?: string } = {}): ActionDef
       }
       const html = p.parse_mode === "html";
       let text = ctx.render(p.text, html ? "html" : "none");
+      if (ctx.isTest) text = `${html ? "🧪 <b>TEST</b>" : "🧪 TEST"} · ${text}`;
       let mode: "HTML" | undefined = html ? "HTML" : undefined;
       if (text.length > TELEGRAM_TEXT_LIMIT) {
         // Cutting HTML could break a tag; long messages go out as plain text instead.

@@ -16,7 +16,14 @@
  *   - `\{{` renders a literal `{{`.
  */
 
-export type TemplateEscape = "none" | "html";
+/**
+ * How substituted values are escaped (the template's literal text is never touched):
+ *   html   — Telegram HTML mode: values cannot inject markup
+ *   json   — inside a JSON document: values are JSON-string escaped (no quotes added)
+ *   sheets — spreadsheet cells: values that would be read as a formula (=, +, -, @)
+ *            get a leading apostrophe, so on-chain data cannot run IMPORTXML & co.
+ */
+export type TemplateEscape = "none" | "html" | "json" | "sheets";
 
 export type TemplateErrorCode = "syntax" | "unknown_variable" | "unknown_filter" | "bad_argument" | "too_long";
 
@@ -209,6 +216,24 @@ function applyFilter(value: unknown, f: FilterCall): unknown {
   }
 }
 
+const escapeJson = (s: string): string => JSON.stringify(s).slice(1, -1);
+
+/** Numbers stay numbers; anything else a spreadsheet would evaluate becomes literal text. */
+const escapeSheets = (s: string): string => (/^[-+]?\d+(\.\d+)?$/.test(s) || !/^[=+\-@\t\r]/.test(s) ? s : `'${s}`);
+
+function escapeValue(text: string, mode: TemplateEscape | undefined): string {
+  switch (mode) {
+    case "html":
+      return escapeHtml(text);
+    case "json":
+      return escapeJson(text);
+    case "sheets":
+      return escapeSheets(text);
+    default:
+      return text;
+  }
+}
+
 const escapeHtml = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 
@@ -228,7 +253,7 @@ export function renderTemplate(template: string, scope: Record<string, unknown>,
       }
       for (const f of filters) value = applyFilter(value, f);
       const text = toText(value);
-      out += opts.escape === "html" ? escapeHtml(text) : text;
+      out += escapeValue(text, opts.escape);
     }
     if (out.length > TEMPLATE_LIMITS.maxOutputLength) {
       throw new TemplateError("too_long", `rendered output exceeds ${TEMPLATE_LIMITS.maxOutputLength} characters`);

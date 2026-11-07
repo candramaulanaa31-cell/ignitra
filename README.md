@@ -8,21 +8,21 @@ listener / clock / inbound URL ──▶ trigger + condition engine ──▶ ru
  (chain)   (cron)   (HTTP POST)       (match, enrich, evaluate)     (unique key)     (retry)     (Telegram, webhook, push, chain read)
 ```
 
-> **Status: Phase 5 — Accounts, API & plans.** Sign in with a wallet (SIWE), manage
-> connections and flows over the HTTP API, run flows on a **schedule**, on **contract state
-> changes** or from your own **inbound webhook URL**, read contracts mid-flow (**CHAIN_READ**),
-> with plan limits and exact usage metering enforced server-side. The builder UI is Phase 6.
+> **Status: Phase 6 — Builder UI & more actions.** A web app to build a flow in minutes:
+> vertical builder with contract / token auto-detection, the latest real event as a live
+> sample, "Test flow" (TEST runs), a variable picker, run history and step-by-step traces.
+> New actions: **HTTP_REQUEST**, **EMAIL**, **GOOGLE_SHEETS** (OAuth). Installable PWA.
 
 ## Layout
 
 | Path | What |
 |---|---|
 | `apps/api` | Fastify HTTP API: SIWE sign-in, flows, connections, runs and traces, usage, inbound webhook URLs. |
-| `apps/web` | Next.js app (landing + `/app` placeholder). |
+| `apps/web` | Next.js app: landing, wallet sign-in, flow builder, dashboard, run traces, connections, settings; PWA (Web Push). |
 | `apps/listener` | Chain process: ingestion (sync) + matcher, optionally runner and API in the same process; health endpoint, operator CLI (`pnpm ops`). |
 | `apps/runner` | Flow runner: executes queued runs (concurrency, retries, traces, auto-pause). |
 | `packages/core` | Domain core. `@ignitra/core` is isomorphic; `@ignitra/core/server` is Node-only. |
-| `packages/actions` | SSRF-safe HTTP, WEBHOOK / TELEGRAM / WEB_PUSH / CHAIN_READ modules, connections, Postgres run queue, executor. |
+| `packages/actions` | SSRF-safe HTTP; WEBHOOK, TELEGRAM, WEB_PUSH, CHAIN_READ, HTTP_REQUEST, EMAIL, GOOGLE_SHEETS; connections (verified email, OAuth, host-bound secrets); run queue, executor. |
 | `packages/engine` | Trigger modules (chain, schedule, state, inbound), enrichment, flow service with plan limits, matcher (occurrences → runs, metering). |
 | `packages/chain` | RPC reader with failover, built-in ABIs, event decoder, contract-read encoding, explorer ABI registry. Test doubles under `@ignitra/chain/testing`. |
 | `packages/db` | Drizzle schema, SQL migrations, driver-agnostic client (Postgres or PGlite). |
@@ -326,9 +326,9 @@ Intake is bounded:
 
 ### Plans
 
-| Plan | Active flows | Runs / month | Over the quota | Fastest schedule |
+| Plan | Active flows | Runs / month | Over the quota | Schedules |
 |---|---|---|---|---|
-| Free | 3 | 500 | matches are recorded as `plan_limited`; no runs until the 1st (UTC) | every 15 min |
+| Free | 3 | 500 | matches are recorded as `plan_limited`; no runs until the 1st (UTC) | no SCHEDULE (Builder feature, as are Email and Sheets) |
 | Builder | 20 | 10,000 | keeps running, overage metered | every minute |
 | Team | unlimited | 100,000 | keeps running, overage metered | every minute |
 
@@ -363,6 +363,77 @@ Not yet exercised live; covered by tests only:
 - **ERC-1271 sign-in from a real Safe:** tested against an on-chain-style contract in FakeChain.
 - **Real Telegram:** this run used a local Bot API stub.
 
+## Builder UI and more actions
+
+The web app is the product surface:
+
+| Page | |
+|---|---|
+| `/app` | Flows: status, trigger → actions, runs, last run, last error |
+| `/app/flows/new`, `/app/flows/<id>/edit` | The builder |
+| `/app/flows/<id>` | Stats, run history (filter, cursor paging), "why it did not run", the inbound URL (copy / rotate), Test / Pause / Activate |
+| `/app/runs/<id>` | Step-by-step trace: trigger evidence, every condition with its actual value, each action's request and response |
+| `/app/connections` | Telegram, webhook, email (verified), Google (OAuth), HTTP secret headers |
+| `/app/settings` | Plan and usage, display timezone, Web Push devices, webhook secret, notices |
+
+The browser only talks to its own origin: `/api/*` is proxied to the API (`API_URL`, read **at build time**). The session cookie is therefore first-party, and the API's CSRF check sees the app's Origin.
+
+- Put the app's origin in `CORS_ORIGINS`. The SIWE domain is derived from it.
+- Set `TRUST_PROXY` to the proxy's addresses, so rate limits see client IPs.
+
+**Builder.** A vertical form, not a canvas:
+
+```
+TRIGGER → CONDITIONS → ACTION 1 → ACTION 2 → … → SETTINGS
+```
+
+- **Address auto-detection:** a pasted address is identified as a token (symbol, name, decimals, supply), a contract (its ABI's events and view functions become pickers) or a wallet.
+- **Live sample:** the latest **real** matching event, found by scanning back from the confirmed head (about 2.8 h), preferring one that passes the conditions. Poll triggers sample the current state, SCHEDULE its time, INBOUND_WEBHOOK the last request or a pasted body. Nothing is invented.
+- **Conditions:** evaluated against the sample in the browser, with the matcher's own evaluator ("✓ passes with 1542.35").
+- **Variable picker:** inserts `{{…}}` at the cursor. It lists the trigger's fields with sample values, the outputs of earlier steps (typed, e.g. CHAIN_READ results) and built-ins.
+- **Test flow:** saves a draft, then runs the actions once with the sample.
+  - Test runs are labelled: `🧪 TEST` in Telegram, `[TEST]` in email subjects and push titles, `test: true` / `X-Ignitra-Test` in webhooks and HTTP requests.
+  - They are never metered, run on paused drafts, and are capped at 30 per hour.
+  - Conditions are evaluated and shown, so you see whether a real event like this one would have run.
+
+**New actions:**
+
+| | |
+|---|---|
+| `HTTP_REQUEST` | Any method and headers, with a JSON / text / form body built from templates. In JSON bodies, values are JSON-escaped and the result must parse. API keys live in an `http` connection, encrypted and **bound to one host**, so a templated URL can never carry them elsewhere. Header names that look like credentials are refused in plain params. Requests are signed and carry the idempotency key. |
+| `EMAIL` | Plain text with a safe HTML twin, via Resend or Brevo from the platform's sender. Recipients are `email` connections that confirmed a 6-digit code (30 min, 5 tries, 3 pending per user), so nobody can be mailed without consent. |
+| `GOOGLE_SHEETS` | Appends a row (one template per column). Google OAuth uses offline access; the refresh token is stored encrypted and access tokens are cached in memory. With USER_ENTERED, substituted values that would be read as a formula (=, +, -, @) are written as text, so on-chain data cannot inject `IMPORTXML`. Appends are at-least-once: add `{{run.idempotency_key}}` as a column to dedupe. |
+
+**Plan features** follow the monetization table:
+
+- Email, Google Sheets and SCHEDULE need **Builder**. Locked types are greyed out in the builder and rejected by the API.
+- A downgrade (`pnpm ops user plan`) pauses flows that use locked features and notifies the owner.
+
+**PWA.** The app ships a manifest, generated icons and a service worker for Web Push and notification clicks. App data is never cached.
+
+- On Android and desktop, "Enable on this device" in Settings is enough.
+- On iPhone, add IGNITRA to the Home Screen first; Web Push works from there (iOS 16.4+).
+
+Validated live on mainnet (2026-11-07). The production build ran on :3200 with the API behind its proxy. The client drove everything through `/api` like a browser: session cookie only, Origin header, no bearer token. Email and Google ran against local stubs of Resend and Google (consent → callback → token refresh); Telegram ran against a stub too.
+
+| Check | Result |
+|---|---|
+| Sign-in through the proxy | SIWE → HttpOnly cookie (no token in the body). A cookie write without Origin → 403. |
+| Detection / sample | USDG detected (Global Dollar, 6 decimals). The sample was the latest real transfer, preferring one ≥ 1,000 USDG to match the conditions. |
+| Connections | Telegram verified. Email verified with the mailed code. HTTP secret headers. Google OAuth round trip through the proxy. |
+| Test flow | One TEST run of a 5-step flow (CHAIN_READ → Telegram → HTTP API → email → Sheets): all succeeded and every message was labelled TEST |
+| Activated | 20 real runs, all succeeded. 994 matches: 912 failed the conditions, then 62 hit `max_runs_per_hour=20` and the flow **auto-paused** (runaway protection), with a notice in Settings. |
+| HTTP API calls | 22 requests: 22/22 valid signatures, the host-bound secret header present, valid JSON bodies with values from the trigger and earlier steps, 0 duplicate idempotency keys |
+| Email / Sheets / Telegram | 21 emails, 21 rows (one OAuth refresh for the whole session), 21 messages |
+| Inbound URL through the proxy | 202. A retry with the same Idempotency-Key → `duplicate: true`, one run. |
+| UI | Headless Edge screenshots of every page with live data, desktop and phone width (the run history becomes cards). No page errors. |
+
+Not exercised live yet:
+
+- real Resend / Brevo / Google accounts (they need your keys and OAuth client);
+- Web Push on a phone;
+- a wallet extension in a real browser (the SIWE server path is the one validated above).
+
 ## Scripts
 
 | Command | |
@@ -375,6 +446,7 @@ Not yet exercised live; covered by tests only:
 | `pnpm dev:listener` | chain listener |
 | `pnpm dev:runner` | flow runner |
 | `pnpm dev:api` | HTTP API (separate process needs real Postgres; with PGlite use the `api` role) |
+| `pnpm dev:web` | web app on :3000; `/api` proxies to `API_URL` |
 | `pnpm gen:secret` / `pnpm gen:vapid` | secrets (base64url) / Web Push VAPID keys |
 | `pnpm ops …` | flows, runs, traces, evaluations, connections, push, watches, sync status, verify, `user plan`, `usage` |
 
@@ -391,7 +463,7 @@ Not yet exercised live; covered by tests only:
 3. **Trigger and condition engine** ✅ five chain triggers, conditions, matcher, idempotent runs, runaway protection
 4. **Flow runner** ✅ WEBHOOK / TELEGRAM (replaces Discord) / WEB_PUSH, retries, traces, SSRF guard, auto-pause
 5. **Accounts and API** ✅ SIWE (EOA + ERC-1271), connections and flows API, SCHEDULE / STATE_CHANGE / INBOUND_WEBHOOK, CHAIN_READ, plan limits + metering
-6. Builder UI + email / Google Sheets / HTTP
+6. **Builder UI** ✅ builder, live samples, Test flow, variable picker, dashboard, run traces, HTTP_REQUEST / EMAIL / GOOGLE_SHEETS, PWA
 7. Templates + public surface
 8. SDK, integrations, scoped onchain actions
 9. Hardening + launch

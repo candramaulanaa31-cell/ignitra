@@ -103,6 +103,31 @@ export const stateChangeTrigger: PollTriggerModule<StateChangeParams, StateChang
     ];
   },
 
+  async sample(p, rt, block) {
+    const fn = parseFunctionFragment(p.function);
+    let value: JsonValue;
+    try {
+      value = decodeFunctionReturn(fn, await rt.reader.call({ to: p.address, data: encodeFunctionCall(fn, p.args), blockNumber: block.number }));
+    } catch (err) {
+      if (err instanceof CallRevertedError || err instanceof FunctionCallError) return null;
+      throw err;
+    }
+    const [only] = fn.outputs;
+    return {
+      note: "current value (previous = current): the flow runs when it changes",
+      payload: {
+        ...blockEvidence(block, rt.chain, p.address),
+        contract: p.address,
+        function: { name: fn.name, signature: functionSignature(fn) },
+        args: normalizeCallArgs(fn, p.args),
+        previous: value,
+        current: value,
+        ...(fn.outputs.length === 1 && only && isInteger(only.type) ? { delta: "0" } : {}),
+        previous_block: block.number,
+      },
+    };
+  },
+
   async poll({ params: p, state, block }, rt) {
     if (state && block.number <= state.sampled) return { state: null, outcomes: [] };
     const fn = parseFunctionFragment(p.function);

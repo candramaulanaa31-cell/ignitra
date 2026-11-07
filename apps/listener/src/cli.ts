@@ -22,6 +22,7 @@ import {
   FlowValidationError,
   createFlow,
   createTriggerModules,
+  enforcePlanFeatures,
   ensureUser,
   getCurrentDefinition,
   inboundHookSalt,
@@ -300,6 +301,8 @@ try {
     if (!wallet || !plan || !(PLANS as readonly string[]).includes(plan)) throw new Error(`usage: pnpm ops user plan <wallet> <${PLANS.join("|")}>`);
     const userId = await ensureUser(db, wallet);
     await db.update(users).set({ plan: plan as Plan }).where(eq(users.id, userId));
+    const pausedFlows = await enforcePlanFeatures(db, userId);
+    if (pausedFlows.length > 0) console.log(`paused ${pausedFlows.length} flow(s) using features outside the ${plan} plan: ${pausedFlows.join(", ")}`);
     const l = planLimits(plan);
     console.log(`${userId} (${normalizeAddress(wallet)}) is on ${plan}: ${l.activeFlows ?? "unlimited"} active flows, ${l.runsPerMonth} runs/month${l.overage ? " + metered overage" : ""}, schedules every ${l.minScheduleMinutes} min at most`);
   } else if (cmd === "usage") {

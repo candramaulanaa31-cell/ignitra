@@ -214,6 +214,7 @@ export class RunExecutor {
       if (module.connectionType && loaded.type !== module.connectionType) {
         return { status: "failed", retryable: false, error: `connection ${connectionId} is a ${loaded.type} connection, ${step.type} needs ${module.connectionType}` };
       }
+      if (loaded.metadata.verified === false) return { status: "failed", retryable: false, error: `connection ${connectionId} is not verified yet` };
       connection = loaded;
     } else if (module.connectionType && !module.connectionOptional) {
       return { status: "failed", retryable: false, error: `${step.type} needs a connection_id` };
