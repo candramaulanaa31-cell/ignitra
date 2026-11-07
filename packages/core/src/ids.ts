@@ -15,6 +15,7 @@ export const ID_PREFIXES = {
   notification: "ntf",
   session: "ses",
   inboundRequest: "req",
+  template: "tpl",
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;

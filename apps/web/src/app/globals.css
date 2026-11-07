@@ -839,3 +839,157 @@ footer.site {
   color: var(--muted);
   font-size: 13px;
 }
+
+/* ---- templates, landing demo, docs (Phase 7) --------------------------------------- */
+
+.tpl-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.tpl-card {
+  text-decoration: none;
+  display: block;
+}
+
+.tpl-card:hover {
+  border-color: var(--accent);
+  color: inherit;
+}
+
+a.chip {
+  text-decoration: none;
+}
+
+.chip.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+pre.outline .kw {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.live-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 60%, transparent);
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  70% {
+    box-shadow: 0 0 0 8px transparent;
+  }
+}
+
+.feed {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.feed li {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr) auto;
+  gap: 12px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  align-items: baseline;
+}
+
+.feed li:last-child {
+  border-bottom: 0;
+}
+
+.docs {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 28px;
+}
+
+.docs-nav {
+  position: sticky;
+  top: 16px;
+  align-self: start;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.docs-nav a {
+  text-decoration: none;
+  color: var(--muted);
+  padding: 4px 8px;
+  border-radius: var(--radius);
+}
+
+.docs-nav a[aria-current="page"],
+.docs-nav a:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.prose {
+  max-width: 780px;
+}
+
+.prose h1 {
+  margin-bottom: 12px;
+}
+
+.prose h2 {
+  margin-top: 32px;
+}
+
+.prose h3 {
+  margin: 22px 0 6px;
+}
+
+.prose p,
+.prose li {
+  line-height: 1.6;
+}
+
+.prose pre.json {
+  max-height: none;
+  margin: 8px 0 14px;
+}
+
+.prose code {
+  background: var(--surface-2);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.prose pre code {
+  background: none;
+  padding: 0;
+}
+
+.prose .table {
+  margin: 8px 0 16px;
+}
+
+@media (max-width: 720px) {
+  .docs {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .docs-nav {
+    position: static;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .feed li {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .feed li .when {
+    grid-column: 1 / -1;
+  }
+}

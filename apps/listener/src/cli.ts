@@ -14,6 +14,7 @@ import {
   flowVersions,
   flows,
   runs,
+  templates,
   usageMonthly,
   users,
   watches,
@@ -52,6 +53,10 @@ import { DbAbiStore, ListenerStore, addWatch } from "./store";
  *   user plan <wallet> <free|builder|team>   (no billing yet: operators set plans)
  *   usage [--owner 0x…]                      runs metered this month vs the plan
  *
+ * Public surface
+ *   template list | template hide <slug> | template unhide <slug>   (moderation of shared templates)
+ *   demo setup <wallet> [--token 0x…] [--min 1000]                   the landing page's live demo flow
+ *
  * Chain
  *   watch add <address> [event] [--fast] [--note …] | watch list | watch rm <id>
  *   status | events [--limit n] | stats | verify <from> <to>
@@ -64,6 +69,8 @@ const USAGE = `usage: pnpm ops <command>
   runs [--flow <id>] [--limit n]
   evals --flow <id> [--limit n]
   user plan <wallet> <free|builder|team> | usage [--owner 0x..]
+  template list | template hide <slug> | template unhide <slug>
+  demo setup <wallet> [--token 0x..] [--min 1000]
   watch add <address> [event-signature|topic0] [--fast] [--note ..] | watch list | watch rm <id>
   status | events [--limit n] | stats | verify <from-block> <to-block>
 ${DELIVERY_USAGE}`;
@@ -103,6 +110,7 @@ const { values, positionals } = parseArgs({
     url: { type: "string" },
     file: { type: "string" },
     test: { type: "boolean", default: false },
+    min: { type: "string" },
   },
 });
 
@@ -305,6 +313,39 @@ try {
     if (pausedFlows.length > 0) console.log(`paused ${pausedFlows.length} flow(s) using features outside the ${plan} plan: ${pausedFlows.join(", ")}`);
     const l = planLimits(plan);
     console.log(`${userId} (${normalizeAddress(wallet)}) is on ${plan}: ${l.activeFlows ?? "unlimited"} active flows, ${l.runsPerMonth} runs/month${l.overage ? " + metered overage" : ""}, schedules every ${l.minScheduleMinutes} min at most`);
+  } else if (cmd === "template" && sub === "list") {
+    const rows = await db.select({ t: templates, owner: users.address }).from(templates).innerJoin(users, eq(users.id, templates.ownerId)).orderBy(desc(templates.createdAt)).limit(limit);
+    console.table(rows.map((r) => ({ slug: r.t.slug, name: short(r.t.name, 40), owner: short(r.owner, 12), visibility: r.t.visibility, hidden: r.t.hiddenAt ? "yes" : "", created: r.t.createdAt.toISOString().slice(0, 16) })));
+  } else if (cmd === "template" && (sub === "hide" || sub === "unhide")) {
+    const [slug] = rest;
+    if (!slug) throw new Error(USAGE);
+    const updated = await db.update(templates).set({ hiddenAt: sub === "hide" ? new Date() : null }).where(eq(templates.slug, slug)).returning({ slug: templates.slug });
+    console.log(updated.length ? `${slug} ${sub === "hide" ? "hidden (answers 404)" : "visible again"}` : `no template ${slug}`);
+  } else if (cmd === "demo" && sub === "setup") {
+    const [wallet] = rest;
+    if (!wallet) throw new Error("usage: pnpm ops demo setup <wallet> [--token 0x..] [--min 1000]");
+    const ownerId = await ensureUser(db, wallet);
+    const token = values.token && /^0x[0-9a-fA-F]{40}$/.test(values.token) ? values.token : "0x5fc5360d0400a0fd4f2af552add042d716f1d168";
+    const min = values.min ?? "1000";
+    // A read-only flow: nothing leaves IGNITRA, the landing page shows its runs live.
+    const created = await createFlow(flowDeps(), {
+      ownerId,
+      name: `Live demo: transfers ≥ ${min} of ${token.slice(0, 6)}…${token.slice(-4)}`,
+      activate: true,
+      definition: {
+        trigger: { type: "TOKEN_TRANSFER", params: { token } },
+        conditions: { all: [{ field: "amount_decimal", op: ">=", value: min }] },
+        actions: [{ step_id: "balance", type: "CHAIN_READ", params: { address: token, function: "function balanceOf(address account) view returns (uint256)", args: ["{{trigger.to}}"] } }],
+        settings: { mode: "confirmed", max_runs_per_hour: 600 },
+      },
+    });
+    console.log(`demo flow ${created.flowId} is active. Set DEMO_FLOW_ID=${created.flowId} for the API.`);
+    // Demo runs are metered like any other: on a capped plan the landing page would go quiet once the month's runs are used.
+    const [owner] = await db.select({ plan: users.plan }).from(users).where(eq(users.id, ownerId));
+    const limits = planLimits(owner?.plan ?? "free");
+    if (!limits.overage) {
+      console.log(`warning: the owner is on the ${owner?.plan ?? "free"} plan (${limits.runsPerMonth} runs/month, no overage); the demo stops when they are used. Give it room: pnpm ops user plan ${wallet} team`);
+    }
   } else if (cmd === "usage") {
     const period = usagePeriod();
     const rows = await db

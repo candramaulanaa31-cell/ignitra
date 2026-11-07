@@ -18,7 +18,10 @@ import { retryAfterMs } from "../http";
  * substituted values that would be read as a formula (=, +, -, @) are written as
  * text, so on-chain data cannot inject formulas. Appends are at-least-once: add
  * {{run.idempotency_key}} as a column if your sheet must deduplicate retries.
+ * TEST runs append one extra trailing cell, SHEETS_TEST_MARKER.
  */
+
+export const SHEETS_TEST_MARKER = "🧪 TEST run";
 
 const template = z
   .string()
@@ -80,6 +83,8 @@ export function createGoogleSheetsAction(cfg: GoogleConfig | null): ActionDefini
       const refreshToken = ctx.connection?.secret.refresh_token;
       if (typeof refreshToken !== "string" || !ctx.connection) return { status: "failed", retryable: false, error: "google connection has no refresh token; reconnect Google" };
       const row = p.values.map((v) => ctx.render(v, p.input === "USER_ENTERED" ? "sheets" : "none"));
+      // TEST runs are labelled in every destination: a trailing cell keeps the data columns typed.
+      if (ctx.isTest) row.push(SHEETS_TEST_MARKER);
       const range = `'${p.sheet.replace(/'/g, "''")}'!A1`;
       const request = { spreadsheet_id: p.spreadsheet, sheet: p.sheet, columns: row.length, row_preview: row.map((c) => c.slice(0, 80)) };
 

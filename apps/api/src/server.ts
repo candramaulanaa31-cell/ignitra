@@ -15,6 +15,8 @@ import { registerAccountRoutes } from "./routes/account";
 import { registerAuthRoutes } from "./routes/auth";
 import { registerBuilderRoutes } from "./routes/builder";
 import { registerConnectionRoutes, registerGoogleCallback } from "./routes/connections";
+import { registerDemoRoutes } from "./routes/demo";
+import { registerPublicTemplateRoutes, registerTemplateRoutes } from "./routes/templates";
 import { registerFlowRoutes } from "./routes/flows";
 import { registerHookRoutes } from "./routes/hooks";
 
@@ -55,6 +57,8 @@ export interface ServerDeps {
   readonly confirmationDepth?: number;
   /** A TEST run was queued (single process: wake the runner). */
   readonly onRunQueued?: () => void;
+  /** The flow the landing page shows live (DEMO_FLOW_ID). */
+  readonly demoFlowId?: string | null;
   /** Called after an inbound webhook request is stored (single process: wake the matcher). */
   readonly onInboundEvent?: () => void;
   readonly now?: () => number;
@@ -173,6 +177,7 @@ function context(deps: ServerDeps, triggers: TriggerModuleRegistry, actions: Act
     google: deps.google ?? null,
     webUrl: (deps.webUrl ?? corsOrigins[0] ?? "http://localhost:3000").replace(/\/+$/, ""),
     onRunQueued: deps.onRunQueued ?? (() => {}),
+    demoFlowId: deps.demoFlowId ?? null,
     keyring: deps.keyring ?? null,
     webhookMaster: deps.webhookMaster ?? null,
     http: deps.http ?? createSafeHttp({ allowPrivate: allowPrivateOutbound }),
@@ -282,12 +287,15 @@ export async function buildServer(deps: ServerDeps) {
   registerAuthRoutes(app, ctx);
   registerHookRoutes(app, ctx);
   registerGoogleCallback(app, ctx);
+  registerPublicTemplateRoutes(app, ctx);
+  registerDemoRoutes(app, ctx);
   await app.register(async (scope) => {
     scope.addHook("onRequest", authenticate({ db: ctx.db, corsOrigins: ctx.corsOrigins, now: ctx.now }));
     registerAccountRoutes(scope, ctx);
     registerConnectionRoutes(scope, ctx);
     registerFlowRoutes(scope, ctx);
     registerBuilderRoutes(scope, ctx);
+    registerTemplateRoutes(scope, ctx);
   });
 
   return app;

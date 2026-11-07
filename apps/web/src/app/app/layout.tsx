@@ -9,6 +9,7 @@ import { shortHex } from "@/lib/format";
 const NAV = [
   { href: "/app", label: "Flows", match: (p: string) => p === "/app" || (p.startsWith("/app/flows") && !p.endsWith("/new")) || p.startsWith("/app/runs") },
   { href: "/app/flows/new", label: "New flow", match: (p: string) => p === "/app/flows/new" },
+  { href: "/app/templates", label: "Templates", match: (p: string) => p.startsWith("/app/templates") },
   { href: "/app/connections", label: "Connections", match: (p: string) => p.startsWith("/app/connections") },
   { href: "/app/settings", label: "Settings", match: (p: string) => p.startsWith("/app/settings") },
 ];

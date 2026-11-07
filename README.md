@@ -8,10 +8,10 @@ listener / clock / inbound URL ──▶ trigger + condition engine ──▶ ru
  (chain)   (cron)   (HTTP POST)       (match, enrich, evaluate)     (unique key)     (retry)     (Telegram, webhook, push, chain read)
 ```
 
-> **Status: Phase 6 — Builder UI & more actions.** A web app to build a flow in minutes:
-> vertical builder with contract / token auto-detection, the latest real event as a live
-> sample, "Test flow" (TEST runs), a variable picker, run history and step-by-step traces.
-> New actions: **HTTP_REQUEST**, **EMAIL**, **GOOGLE_SHEETS** (OAuth). Installable PWA.
+> **Status: Phase 7 — Templates & public surface.** 14 ready-made templates in a public
+> gallery, one-click "Use template", shareable community templates, a landing page with a
+> live demo flow on mainnet, and full docs: triggers, conditions, actions, variables,
+> webhooks and the API.
 
 ## Layout
 
@@ -392,7 +392,7 @@ TRIGGER → CONDITIONS → ACTION 1 → ACTION 2 → … → SETTINGS
 - **Conditions:** evaluated against the sample in the browser, with the matcher's own evaluator ("✓ passes with 1542.35").
 - **Variable picker:** inserts `{{…}}` at the cursor. It lists the trigger's fields with sample values, the outputs of earlier steps (typed, e.g. CHAIN_READ results) and built-ins.
 - **Test flow:** saves a draft, then runs the actions once with the sample.
-  - Test runs are labelled: `🧪 TEST` in Telegram, `[TEST]` in email subjects and push titles, `test: true` / `X-Ignitra-Test` in webhooks and HTTP requests.
+  - Test runs are labelled: `🧪 TEST` in Telegram, `[TEST]` in email subjects and push titles, `test: true` / `X-Ignitra-Test` in webhooks and HTTP requests, a trailing `🧪 TEST run` cell in Google Sheets rows.
   - They are never metered, run on paused drafts, and are capped at 30 per hour.
   - Conditions are evaluated and shown, so you see whether a real event like this one would have run.
 
@@ -434,13 +434,90 @@ Not exercised live yet:
 - Web Push on a phone;
 - a wallet extension in a real browser (the SIWE server path is the one validated above).
 
+## Templates, gallery and docs
+
+Public pages (no sign-in), server-rendered from the API:
+
+| Page | |
+|---|---|
+| `/` | Landing: the pitch, a **live demo** (a real flow's latest runs on mainnet), featured templates, guarantees, system status |
+| `/templates` | Gallery: 14 official templates by category, plus community templates |
+| `/templates/<slug>` | What a template does (WHEN / IF / THEN), what you fill in, Share on X, copy link |
+| `/docs` | Overview, Triggers, Conditions, Actions, Variables, Webhooks, API. Triggers and Actions are generated from the live catalog (`/v1/triggers`, `/v1/actions`) |
+
+In the app, `/app/templates/<slug>` fills in a template ("Create & activate" or a draft) and `/app/templates` lists the templates you shared. Every flow page has "Share as template", and the builder offers "Start from a template".
+
+**Templates.** A template is a flow definition whose variable parts are whole-value placeholders, `{"$param": "token"}`:
+
+- Types: address, decimal, number, text, connection (of a given type), cron, url, spreadsheet, select. An optional placeholder left empty drops its property.
+- "Use template" fills them in and validates exactly like a hand-built flow, with issues mapped back to each field. It applies the plan's limits and creates the flow, active or as a draft.
+- Destinations are never defaults: a connection, URL or spreadsheet is always the user's own choice.
+
+The official templates live in `packages/core/src/template-catalog.ts`. A test fills each one with example values and validates it against the real trigger and action modules. Each has a ready-made post for X (`shareText`), which "Share on X" pre-fills.
+
+| Template | Trigger → actions | You fill in |
+|---|---|---|
+| `big-buy-telegram` | TOKEN_TRANSFER → TELEGRAM | token, threshold, chat |
+| `whale-sell-push` | TOKEN_TRANSFER → WEB_PUSH | token, whale, min_amount |
+| `new-holder-sheets` (builder) | NEW_HOLDER → GOOGLE_SHEETS | token, google, spreadsheet, sheet |
+| `new-holder-welcome-telegram` | NEW_HOLDER → TELEGRAM | token, chat |
+| `treasury-low-email` (builder) | BALANCE_THRESHOLD → EMAIL | wallet, threshold, email |
+| `token-balance-low-telegram` | BALANCE_THRESHOLD → TELEGRAM | wallet, token, threshold, chat |
+| `proxy-upgraded-webhook` | CONTRACT_EVENT → WEBHOOK | proxy, url |
+| `ownership-transferred-telegram` | CONTRACT_EVENT → TELEGRAM | contract, chat |
+| `paused-telegram` | STATE_CHANGE → TELEGRAM | contract, chat |
+| `daily-supply-sheets` (builder) | SCHEDULE → CHAIN_READ → GOOGLE_SHEETS | token, schedule, google, spreadsheet, sheet |
+| `new-contract-telegram` | CONTRACT_DEPLOYED → TELEGRAM | deployer, chat |
+| `large-transfer-webhook` | TOKEN_TRANSFER → WEBHOOK | token, min_amount, url |
+| `mint-burn-telegram` | TOKEN_TRANSFER → TELEGRAM | token, chat |
+| `inbound-telegram-relay` | INBOUND_WEBHOOK → TELEGRAM | chat |
+
+Telegram stands in for Discord, as in Phase 4. VIGIL upgrade alerts and Pons launches come with the Phase 8 integrations. Until then, `proxy-upgraded-webhook` watches the EIP-1967 `Upgraded` event directly.
+
+**Sharing.** "Share as template" publishes the flow's current version and converts it automatically:
+
+- Connections, webhook and HTTP URLs, spreadsheets and contract-read addresses become placeholders with no default.
+- Trigger addresses, thresholds and schedules become editable defaults. Condition placeholders read like a form, e.g. "Minimum amount (token units)".
+- Message texts are kept as written, and the author's wallet address is shown. The form says both before publishing.
+- Visibility is `unlisted` (anyone with the link) or `public` (listed under Community). Each user can publish 10 per hour, and uses are counted.
+- The operator can take one down with `pnpm ops template hide <slug>`: it then answers 404 everywhere. Flows already made from it keep running, because they are copies. `unhide` restores it and `template list` reviews them.
+
+**Live demo.** `pnpm ops demo setup <wallet> [--token 0x…] [--min 1000]` creates a read-only flow owned by that wallet and prints its id: transfers ≥ min → read the recipient's balance. Set `DEMO_FLOW_ID` on the API.
+
+- `GET /v1/demo` serves the outline (destinations hidden), stats, the p50 / p90 latency from block to finished run, and the last 12 runs, cached for 5 s.
+- Demo runs are metered. The command warns when the owner's plan is capped; fix it with `pnpm ops user plan <wallet> team`.
+
+**Caching.** Refresh rates:
+
+- The landing regenerates at most every 5 s. Its feed polls while the tab is visible.
+- Template pages refresh every 60 s, and the official ones are pre-rendered at build.
+- The docs catalogs refresh every 5 minutes.
+
+If the API is down during a refresh, the last good page stays up: a fallback is never cached as a 404. Build the web app with the API reachable at `API_URL`. Otherwise the first docs build shows "catalog unavailable" until its next refresh.
+
+Validated live on mainnet (2026-11-07). The production build ran on :3300 with the API behind its proxy, and the client acted like a browser (cookie + Origin). Telegram ran against a stub. The receiver verified webhooks with the docs' own Node snippet.
+
+| Check | Result |
+|---|---|
+| Gallery | 14 official templates, served anonymously. The category filter works and an unknown slug → 404. Every detail page has placeholders, an outline, a link and X text. |
+| Use template | big-buy-telegram (threshold: 2,000 USDG as a % of supply) and large-transfer-webhook were created active. The token was normalized to lowercase. Missing or bad values → 422 per field. Another user's connection → 422. A builder-only template on free → 422 "needs the builder plan". Signed out → 401; a cookie write without Origin → 403. |
+| Publish | A public and an unlisted template from A's flows contain no connection id, chat id or URL. The unlisted one is not listed but works by link. B can neither publish nor delete A's. |
+| Community use | B used A's public template with B's own chat. The flow went active, the card counted the use, and B's flow posts to B's bot. |
+| Real runs (≈ 20 min) | 60 + 60 + 60 succeeded runs; each flow then reached `max_runs_per_hour`. 120 Telegram messages and 60 webhooks: 60/60 signatures valid with the docs snippet, 60 distinct idempotency keys. No duplicates across two backend restarts. |
+| Operator | `template hide` → 404 on the API, the gallery, the page and instantiate. The flow made from it kept running. `unhide` restored it with its use count. |
+| Docs examples | The API docs' sign-in script ran verbatim (bearer token, lists the flows). The create-flow example validates. |
+| Demo | `/v1/demo` with real runs: p50 5.0 s, p90 6.8 s block → done over 100 runs in steady state. A restart shows up as a longer p90. |
+| UI | Headless Edge at desktop and phone width: landing with the live feed, gallery, details, the use form (and the plan lock), the share form, every docs page. No page errors, no horizontal overflow. |
+
+Not exercised live: the Email and Sheets templates against real accounts (the actions were validated on stubs in Phase 6), and the Python verification snippet (no Python on the test machine; it mirrors the tested Node one).
+
 ## Scripts
 
 | Command | |
 |---|---|
 | `pnpm check` | typecheck + all tests |
 | `pnpm typecheck` | strict `tsc` across every package |
-| `pnpm test` | Vitest (core, db, api) |
+| `pnpm test` | Vitest, every package |
 | `pnpm build` | production build of the web app |
 | `pnpm dev` | all apps in parallel (needs real Postgres) |
 | `pnpm dev:listener` | chain listener |
@@ -448,7 +525,7 @@ Not exercised live yet:
 | `pnpm dev:api` | HTTP API (separate process needs real Postgres; with PGlite use the `api` role) |
 | `pnpm dev:web` | web app on :3000; `/api` proxies to `API_URL` |
 | `pnpm gen:secret` / `pnpm gen:vapid` | secrets (base64url) / Web Push VAPID keys |
-| `pnpm ops …` | flows, runs, traces, evaluations, connections, push, watches, sync status, verify, `user plan`, `usage` |
+| `pnpm ops …` | flows, runs, traces, evaluations, connections, push, watches, sync status, verify, `user plan`, `usage`, `template list / hide / unhide`, `demo setup` |
 
 ## Notes
 
@@ -464,6 +541,6 @@ Not exercised live yet:
 4. **Flow runner** ✅ WEBHOOK / TELEGRAM (replaces Discord) / WEB_PUSH, retries, traces, SSRF guard, auto-pause
 5. **Accounts and API** ✅ SIWE (EOA + ERC-1271), connections and flows API, SCHEDULE / STATE_CHANGE / INBOUND_WEBHOOK, CHAIN_READ, plan limits + metering
 6. **Builder UI** ✅ builder, live samples, Test flow, variable picker, dashboard, run traces, HTTP_REQUEST / EMAIL / GOOGLE_SHEETS, PWA
-7. Templates + public surface
+7. **Templates + public surface** ✅ 14 official templates, gallery, use / share templates, landing with a live demo, docs
 8. SDK, integrations, scoped onchain actions
 9. Hardening + launch

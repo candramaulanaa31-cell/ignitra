@@ -11,5 +11,7 @@ export * from "./conditions";
 export * from "./decimal";
 export * from "./fields";
 export * from "./plans";
+export * from "./flow-templates";
+export * from "./template-catalog";
 export * from "./templates";
 export * from "./template-check";

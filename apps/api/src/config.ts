@@ -38,6 +38,8 @@ export const apiEnvShape = {
   ),
   /** The web app (OAuth sends the browser back there). Default: the first CORS origin. */
   WEB_URL: envVar.optional(envVar.httpUrl),
+  /** The flow shown live on the landing page (create it with: pnpm ops demo setup <wallet>). */
+  DEMO_FLOW_ID: envVar.optional(z.string().regex(/^fl_[0-9a-z]{26}$/)),
   /** Requests per minute accepted per inbound webhook URL. */
   INBOUND_RATE_PER_MINUTE: envVar.withDefault(envVar.int(1, 100_000).default(60)),
   /** Requests stored per inbound webhook URL per 24 h (bounds storage; bodies are up to 64 KB). */
@@ -124,6 +126,7 @@ export async function createApiFromEnv(
     ...(deps.onInboundEvent ? { onInboundEvent: deps.onInboundEvent } : {}),
     ...(deps.onRunQueued ? { onRunQueued: deps.onRunQueued } : {}),
     ...(env.WEB_URL ? { webUrl: env.WEB_URL } : {}),
+    demoFlowId: env.DEMO_FLOW_ID ?? null,
     email,
     google,
   };

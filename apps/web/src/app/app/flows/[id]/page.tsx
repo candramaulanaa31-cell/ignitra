@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { use, useState } from "react";
 import { useSession } from "@/components/session";
+import { ShareTemplate } from "@/components/share-template";
 import { Badge, CopyButton, Empty, Json, Notice, Spinner, TestBadge, useToast } from "@/components/ui";
 import { api, errorText, useApi } from "@/lib/api";
 import { ago, duration, label, shortHex, when } from "@/lib/format";
@@ -271,6 +272,9 @@ export default function FlowPage({ params }: { params: Promise<{ id: string }> }
       </div>
 
       {f.status_reason ? <Notice kind="warn">{f.status_reason}</Notice> : null}
+      <div className="row">
+        <ShareTemplate flowId={f.id} flowName={f.name} />
+      </div>
       {f.hook_url !== undefined ? (
         <div className="card">
           <div className="card-head">

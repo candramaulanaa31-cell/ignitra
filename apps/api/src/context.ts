@@ -29,6 +29,8 @@ export interface ApiContext {
   readonly webUrl: string;
   /** A TEST run was queued (single process: wake the runner). */
   readonly onRunQueued: () => void;
+  /** The flow shown live on the landing page (operator-chosen; public chain data only). */
+  readonly demoFlowId: string | null;
   /** Encrypts connection secrets (null: connections cannot be created). */
   readonly keyring: Keyring | null;
   /** WEBHOOK_SIGNING_SECRET: per-owner webhook secrets and inbound hook URLs. */

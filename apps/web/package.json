@@ -15,7 +15,8 @@
     "next": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
-    "viem": "catalog:"
+    "viem": "catalog:",
+    "server-only": "0.0.1"
   },
   "devDependencies": {
     "@types/node": "catalog:",

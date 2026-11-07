@@ -23,9 +23,11 @@ import {
   FLOW_STATUSES,
   PLANS,
   RUN_STATUSES,
+  TEMPLATE_CATEGORIES,
   STEP_STATUSES,
   WATCH_SOURCES,
   type FlowDefinition,
+  type TemplatePlaceholder,
 } from "@ignitra/core";
 import type { EncryptedEnvelope } from "@ignitra/core/server";
 
@@ -629,6 +631,58 @@ export const inboundEvents = pgTable(
   ],
 );
 
+// ===========================================================================
+// Templates (Phase 7)
+// ===========================================================================
+
+/**
+ * templates — flows users publish to share (official templates live in code).
+ * The definition carries `{ "$param": key }` placeholders; private destinations
+ * (connections, URLs, spreadsheets) are always placeholders without defaults.
+ */
+export const templates = pgTable(
+  "templates",
+  {
+    id: text("id").primaryKey(),
+    slug: text("slug").notNull(),
+    ownerId: text("owner_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    summary: text("summary").notNull(),
+    description: text("description").notNull().default(""),
+    category: text("category", { enum: TEMPLATE_CATEGORIES }).notNull(),
+    tags: jsonb("tags").$type<string[]>().notNull().default([]),
+    placeholders: jsonb("placeholders").$type<TemplatePlaceholder[]>().notNull(),
+    definition: jsonb("definition").$type<Record<string, unknown>>().notNull(),
+    /** unlisted = anyone with the link; public = also listed in the gallery ("Community"). */
+    visibility: text("visibility", { enum: ["unlisted", "public"] }).notNull().default("unlisted"),
+    /** Operator moderation: hidden templates answer 404. */
+    hiddenAt: ts("hidden_at"),
+    sourceFlowId: text("source_flow_id").references(() => flows.id, { onDelete: "set null" }),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    updatedAt: ts("updated_at")
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (t) => [
+    uniqueIndex("templates_slug_key").on(t.slug),
+    index("templates_owner_idx").on(t.ownerId),
+    index("templates_public_idx").on(t.createdAt).where(sql`visibility = 'public' and hidden_at is null`),
+    check("templates_slug_format", sql`slug ~ '^[a-z0-9-]{3,80}$'`),
+    check("templates_category_valid", inList("category", TEMPLATE_CATEGORIES)),
+    check("templates_visibility_valid", sql`visibility in ('unlisted', 'public')`),
+  ],
+);
+
+/** template_stats — "used N times", for official (code) and user (DB) templates alike. */
+export const templateStats = pgTable("template_stats", {
+  slug: text("slug").primaryKey(),
+  uses: bigint("uses", { mode: "number" }).notNull().default(0),
+  lastUsedAt: ts("last_used_at"),
+});
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type Flow = typeof flows.$inferSelect;
@@ -655,4 +709,5 @@ export type OwnerNotification = typeof ownerNotifications.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
 export type UsageMonthly = typeof usageMonthly.$inferSelect;
 export type InboundEvent = typeof inboundEvents.$inferSelect;
+export type TemplateRow = typeof templates.$inferSelect;
 export type NewInboundEvent = typeof inboundEvents.$inferInsert;
