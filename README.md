@@ -666,7 +666,7 @@ Trigger matrix. The fork test (`apps/listener/src/triggers.fork.test.ts`) runs a
 | BALANCE_THRESHOLD | Phase 3 (native, a bot wallet) | Crossing 1 ETH → 1 run; staying above → none |
 | CONTRACT_DEPLOYED | — | A deployment by the watched EOA → 1 run with the address |
 | STATE_CHANGE | Phase 5 (a USDG pool) | `balanceOf` 0 → 12.5 → 13.5 USDG → 2 runs |
-| NEW_LAUNCH | Phase 8 (a real launch decoded) | A real Pons launch replayed → 1 run with the new token |
+| NEW_LAUNCH | Phase 8 (a real launch decoded) | The newest real Pons `launchAndBuy`, sent again with a fresh CREATE2 salt → 1 run with the new token |
 | SCHEDULE | Phase 5 (9 minutes, 0 gaps, 0 duplicates) | not a chain trigger |
 | INBOUND_WEBHOOK | Phases 5, 6 (incl. a duplicate key) | not a chain trigger |
 | VIGIL_ALERT | Phase 8 (VIGIL's signed request and a real finding verified) | not a chain trigger |

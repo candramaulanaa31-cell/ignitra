@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { asc, eq } from "drizzle-orm";
-import { encodeFunctionData, parseAbi, type Hex } from "viem";
+import { decodeFunctionData, encodeFunctionData, parseAbi, type Hex } from "viem";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { normalizeAddress, resolveChainConfig, type NormalizedAddress } from "@ignitra/core";
 import { createLogger } from "@ignitra/core/server";
@@ -13,7 +13,7 @@ import { ChainSync } from "./sync";
 
 /**
  * Phase 9 trigger matrix: every chain trigger, end to end, against a local fork of Robinhood Chain
- * mainnet (anvil): real USDG, a real Pons launch replayed, real RPC reads through the production
+ * mainnet (anvil): real USDG, a real Pons launch re-sent with a fresh salt, real RPC reads through the production
  * reader → ChainSync → chain_events → Matcher → runs. Then a restart of both proves each event
  * still has exactly one run. (SCHEDULE, INBOUND_WEBHOOK and VIGIL_ALERT do not read the chain:
  * they were validated live, see the README.)
@@ -59,8 +59,20 @@ async function send(tx: { from: string; to?: string; data?: Hex; value?: bigint;
 }
 const usdg = (to: string, amount: bigint) => send({ from: USDG_HOLDER, to: USDG, data: encodeFunctionData({ abi: ERC20, functionName: "transfer", args: [to as Hex, amount] }) });
 
-/** Replays one of the latest real Pons launches on the fork, as its original sender. */
-async function replayLaunch(): Promise<NormalizedAddress> {
+// The Pons V2 router's launchAndBuy (verified source on Sourcify, read 2026-11-08).
+const PONS_ROUTER = "0xe33e9e479df8802cb0866d5d05258bec4cf62948";
+const LAUNCH_AND_BUY = parseAbi([
+  "struct Socials { string twitter; string telegram; string discord; string website; string farcaster; }",
+  "struct TokenParams { string name; string symbol; string logo; string description; Socials socials; address creatorFeeRecipient; uint16 creatorTaxBps; bool buybackEnabled; bytes32 expectedEconomics; bytes32 salt; }",
+  "function launchAndBuy(TokenParams params, uint256 launchConfigId, address pairToken, uint256 quoteIn, uint256 minTokensOut, address recipient, address[] snipeTaxExemptions) payable returns (address token, address curve, uint256 tokensOut)",
+]);
+
+/**
+ * Launches a token on the fork the way real launches do: the newest real `launchAndBuy` through the
+ * Pons router, sent again by its sender with a fresh CREATE2 salt (the token and curve addresses
+ * derive from the salt, so re-sending the original reverts: that pair already exists).
+ */
+async function launchLikeTheLatest(): Promise<NormalizedAddress> {
   const head = Number(BigInt(await call<string>(REMOTE, "eth_blockNumber")));
   const logs = await call<Array<{ transactionHash: string }>>(REMOTE, "eth_getLogs", [
     { address: LAUNCHPADS.pons.factory, topics: [TOKEN_LAUNCHED_TOPIC], fromBlock: `0x${(head - 9_000).toString(16)}`, toBlock: `0x${head.toString(16)}` },
@@ -68,14 +80,27 @@ async function replayLaunch(): Promise<NormalizedAddress> {
   const tried: string[] = [];
   for (const log of logs.reverse().slice(0, 6)) {
     const tx = await call<{ from: string; to: string; input: Hex; value: string }>(REMOTE, "eth_getTransactionByHash", [log.transactionHash]);
+    if (tx.to.toLowerCase() !== PONS_ROUTER) continue;
+    let original;
+    try {
+      original = decodeFunctionData({ abi: LAUNCH_AND_BUY, data: tx.input });
+    } catch {
+      continue;
+    }
+    const [params, configId, pairToken, quoteIn, minOut, recipient, exemptions] = original.args;
+    const data = encodeFunctionData({
+      abi: LAUNCH_AND_BUY,
+      functionName: "launchAndBuy",
+      args: [{ ...params, salt: `0x${randomBytes(32).toString("hex")}` }, configId, pairToken, quoteIn, minOut, recipient, exemptions],
+    });
     await rpc("anvil_impersonateAccount", [tx.from]);
     await rpc("anvil_setBalance", [tx.from, `0x${(BigInt(tx.value) + 10n ** 19n).toString(16)}`]);
-    const receipt = await send({ from: tx.from, to: tx.to, data: tx.input, value: BigInt(tx.value) });
+    const receipt = await send({ from: tx.from, to: tx.to, data, value: BigInt(tx.value) });
     const launched = receipt.logs.find((l) => l.address.toLowerCase() === LAUNCHPADS.pons.factory && l.topics[0] === TOKEN_LAUNCHED_TOPIC);
     if (receipt.status === "0x1" && launched?.topics[1]) return normalizeAddress(`0x${launched.topics[1].slice(26)}`);
     tried.push(`${log.transactionHash}: ${receipt.status}`);
   }
-  throw new Error(`no recent Pons launch replayed on the fork (${logs.length} found; tried ${tried.join(", ")})`);
+  throw new Error(`no Pons launch went through on the fork (${logs.length} recent launches; tried ${tried.join(", ") || "none via the router"})`);
 }
 
 function pipeline() {
@@ -167,7 +192,7 @@ describe.skipIf(!process.env.FORK_TESTS)("every chain trigger on a fork of Robin
     await usdg(dave, 1_000_000n); // NEW_HOLDER only
     await send({ from: FUNDER, to: erin, value: 2n * 10n ** 18n }); // crosses 1 ETH
     const contract = normalizeAddress((await send({ from: deployer, data: "0x6001600c60003960016000f300" })).contractAddress as string);
-    const token = await replayLaunch();
+    const token = await launchLikeTheLatest();
     await p.settle();
 
     // Round 2: repeats that must not fire again (already a holder, still above), and one that must.
