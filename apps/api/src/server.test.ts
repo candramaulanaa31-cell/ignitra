@@ -75,7 +75,14 @@ describe("GET /health — listener heartbeat", () => {
 
     await db.db.insert(chainSyncStatus).values(status(new Date()));
     const fresh = (await app.inject({ method: "GET", url: "/health" })).json();
-    expect(fresh.listener).toMatchObject({ status: "ok", head: 1000, confirmed_cursor: 975, lag_blocks: 5, watches: 2 });
+    expect(fresh.listener).toMatchObject({ status: "ok", head: 1000, confirmed_cursor: 975, lag_blocks: 5, watches: 2, erroring: false });
+
+    // The endpoint is public: a failing listener says so, never what failed (hosts, SQL, providers).
+    await db.db.delete(chainSyncStatus);
+    await db.db.insert(chainSyncStatus).values({ ...status(new Date()), lastError: "connect ECONNREFUSED 10.0.0.5:5432" });
+    const failing = await app.inject({ method: "GET", url: "/health" });
+    expect(failing.json().listener).toMatchObject({ status: "ok", erroring: true });
+    expect(failing.body).not.toContain("10.0.0.5");
 
     await db.db.delete(chainSyncStatus);
     await db.db.insert(chainSyncStatus).values(status(new Date(Date.now() - 120_000)));

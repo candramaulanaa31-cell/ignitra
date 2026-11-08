@@ -128,7 +128,8 @@ export type ListenerHealth =
       watches: number;
       last_tick_at: string;
       heartbeat_age_s: number;
-      last_error: string | null;
+      /** Whether the listener's last tick failed. The message itself stays internal (logs, the health port, pnpm ops status): this endpoint is public. */
+      erroring: boolean;
     };
 
 export interface ApiErrorBody {
@@ -166,7 +167,7 @@ async function readListener(deps: ServerDeps): Promise<ListenerHealth> {
       watches: row.watchCount,
       last_tick_at: row.lastTickAt.toISOString(),
       heartbeat_age_s: Math.round(ageMs / 1000),
-      last_error: row.lastError,
+      erroring: row.lastError !== null,
     };
   } catch {
     return { status: "unknown" };
