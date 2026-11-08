@@ -6,8 +6,10 @@ api.example.com {
 	reverse_proxy 127.0.0.1:4000
 }
 
-# Optional: the web app on the same machine (pnpm build, then: pnpm --filter @ignitra/web start)
-# instead of Vercel. Its /api/* proxies to API_URL, so cookies stay first-party.
+# Optional: the web app on the same machine instead of Vercel. Build it (API_URL=http://127.0.0.1:4000
+# pnpm build), then run it on loopback only, so it is reachable through Caddy and nowhere else:
+#   cd /opt/ignitra/apps/web && node node_modules/next/dist/bin/next start -H 127.0.0.1 -p 3000
+# Its /api/* proxies to API_URL, so cookies stay first-party.
 # app.example.com {
 # 	encode gzip
 # 	reverse_proxy 127.0.0.1:3000

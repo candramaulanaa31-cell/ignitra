@@ -703,7 +703,7 @@ The low-cost layout from the plan: the web app on Vercel, one small VPS for the 
    ```
 
 4. **Schema and preflight.** `pnpm db:migrate`, then `pnpm ops doctor` until nothing fails.
-5. **Services.** Copy `deploy/systemd/*.service` to `/etc/systemd/system/`, then `systemctl enable --now ignitra-api ignitra-listener ignitra-runner`. Put Caddy in front of the API (`deploy/Caddyfile`); it handles the certificate.
+5. **Services.** Copy `deploy/systemd/*.service` to `/etc/systemd/system/`, then `systemctl enable --now ignitra-api ignitra-listener ignitra-runner`. Put Caddy in front of the API (`deploy/Caddyfile`); it handles the certificate. Open only SSH, 80 and 443 in the firewall: the services listen on 127.0.0.1.
 6. **Web app on Vercel.** Set the root directory to `apps/web` and include files outside it (the workspace packages). Set `API_URL=https://api.example.com`. It is read at build time, so redeploy after changing it.
 7. **Backups and monitoring.** Run `deploy/backup.sh` from cron: nightly, verified, kept 14 days. Add an uptime check on `https://api.example.com/health`, and scrape `127.0.0.1:4001/metrics` on the box with the alerts above.
 
