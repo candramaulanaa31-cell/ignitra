@@ -1,4 +1,4 @@
-import { and, between, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import { and, between, eq, inArray, isNull, lt, notInArray, or, sql } from "drizzle-orm";
 import {
   newId,
   type CursorStream,
@@ -9,9 +9,11 @@ import {
   chainCursors,
   chainEvents,
   chainSyncStatus,
+  chainVerification,
   flows,
   watches,
   Lease,
+  type ChainVerificationRow,
   type Database,
   type NewChainEvent,
   type Tx,
@@ -127,6 +129,74 @@ export class ListenerStore {
       topic0: (r.topic0 as NormalizedHash | null) ?? null,
       fast: Boolean(r.fast),
     }));
+  }
+
+  /**
+   * Watches that were live for a whole window starting at `cutoff`: created before it, and (for a
+   * flow's watch) the flow active since before it. Watches added or flows resumed later are not
+   * backfilled on purpose, so the gap detector must not count their older events as missing.
+   */
+  async verifiableWatches(cutoff: Date): Promise<ActiveWatch[]> {
+    const rows = await this.#db
+      .select({ address: watches.address, topic0: watches.topic0 })
+      .from(watches)
+      .leftJoin(flows, eq(flows.id, watches.flowId))
+      .where(
+        and(
+          eq(watches.chainId, this.chainId),
+          lt(watches.createdAt, cutoff),
+          or(isNull(watches.flowId), and(eq(flows.status, "active"), lt(flows.activatedAt, cutoff))),
+        ),
+      )
+      .groupBy(watches.address, watches.topic0);
+    return rows.map((r) => ({ address: r.address as NormalizedAddress, topic0: (r.topic0 as NormalizedHash | null) ?? null, fast: false }));
+  }
+
+  // ---- gap detector ----------------------------------------------------------
+
+  async verification(): Promise<ChainVerificationRow | null> {
+    const [row] = await this.#db.select().from(chainVerification).where(eq(chainVerification.chainId, this.chainId));
+    return row ?? null;
+  }
+
+  async saveVerification(v: { verifiedBlock: number; checked: number; missing: number; window: { from: number; to: number; count: number; sample: string[] } | null }): Promise<void> {
+    await this.#db
+      .insert(chainVerification)
+      .values({ chainId: this.chainId, verifiedBlock: v.verifiedBlock, checkedBlocks: v.checked, missingTotal: v.missing, lastCheckedAt: sql`now()`, lastMissingAt: v.window ? sql`now()` : null, lastMissing: v.window })
+      .onConflictDoUpdate({
+        target: chainVerification.chainId,
+        set: {
+          verifiedBlock: v.verifiedBlock,
+          checkedBlocks: sql`${chainVerification.checkedBlocks} + ${v.checked}`,
+          missingTotal: sql`${chainVerification.missingTotal} + ${v.missing}`,
+          lastCheckedAt: sql`now()`,
+          ...(v.window ? { lastMissingAt: sql`now()`, lastMissing: v.window } : {}),
+          updatedAt: sql`now()`,
+        },
+      });
+  }
+
+  /** Identities (block hash : log index) of the confirmed events stored in a range. */
+  async confirmedIdentities(from: number, to: number): Promise<Set<string>> {
+    const rows = await this.#db
+      .select({ blockHash: chainEvents.blockHash, logIndex: chainEvents.logIndex })
+      .from(chainEvents)
+      .where(and(eq(chainEvents.chainId, this.chainId), eq(chainEvents.status, "confirmed"), between(chainEvents.blockNumber, from, to)));
+    return new Set(rows.map((r) => `${r.blockHash}:${r.logIndex}`));
+  }
+
+  /** Inserts events the gap detector found missing, as confirmed (the matcher sees them next). Never touches cursors or existing rows. */
+  async repairConfirmed(rows: readonly NewChainEvent[]): Promise<number> {
+    return this.#db.transaction(async (tx) => {
+      await this.#fence(tx);
+      let inserted = 0;
+      for (let i = 0; i < rows.length; i += INSERT_CHUNK) {
+        const chunk = rows.slice(i, i + INSERT_CHUNK).map((r) => ({ ...r, status: "confirmed" as const, confirmedAt: sql`now()`, confirmedSeq: sql`nextval('chain_events_confirmed_seq')` }));
+        const result = await tx.insert(chainEvents).values(chunk).onConflictDoNothing().returning({ id: chainEvents.id });
+        inserted += result.length;
+      }
+      return inserted;
+    });
   }
 
   // ---- events --------------------------------------------------------------

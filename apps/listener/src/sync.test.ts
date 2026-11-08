@@ -1,11 +1,11 @@
 import { asc, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { normalizeHash, type NormalizedAddress } from "@ignitra/core";
+import { newId, normalizeHash, type NormalizedAddress } from "@ignitra/core";
 import { createLogger } from "@ignitra/core/server";
-import { EventDecoder, type ChainReader } from "@ignitra/chain";
+import { EventDecoder, type ChainReader, type LogQuery, type RawLog } from "@ignitra/chain";
 import { FakeChain, addr, encodeLog, erc20Transfer, type FakeChainOptions } from "@ignitra/chain/testing";
 import { BUILTIN_ABIS } from "@ignitra/chain";
-import { chainCursors, chainEvents, chainSyncStatus, createDb, leases, watches, type DbHandle } from "@ignitra/db";
+import { chainCursors, chainEvents, chainSyncStatus, createDb, flows, leases, users, watches, type DbHandle } from "@ignitra/db";
 import { LeaseLostError, ListenerStore, addWatch } from "./store";
 import { ChainSync, LogTooDenseError, type SyncOptions } from "./sync";
 
@@ -367,5 +367,71 @@ describe("single active listener (lease + fencing)", () => {
     await expect(a.commitConfirmed({ from: 1, to: 1, rows: [], cursor: { blockNumber: 1, blockHash: null } })).rejects.toBeInstanceOf(
       LeaseLostError,
     );
+  });
+});
+
+describe("gap detector", () => {
+  /** A node that can leave out one block's logs, like an endpoint answering short. */
+  class LossyChain extends FakeChain {
+    hide: number | null = null;
+    override async getLogs(q: LogQuery): Promise<RawLog[]> {
+      const logs = await super.getLogs(q);
+      return this.hide === null ? logs : logs.filter((l) => l.blockNumber !== this.hide);
+    }
+  }
+  const wallClock = { timestampOf: () => Math.floor(Date.now() / 1000) };
+  const HOUR = 3_600_000;
+  const ageWatches = () => h.db.update(watches).set({ createdAt: new Date(Date.now() - HOUR) });
+  async function catchUp(sync: ChainSync): Promise<number> {
+    for (;;) {
+      const r = await sync.tick();
+      if (r.confirmedCursor !== undefined && r.confirmedCursor >= (r.confirmedHead ?? 0)) return r.confirmedCursor;
+    }
+  }
+
+  it("re-reads confirmed blocks, finds what the node left out and inserts it as confirmed", async () => {
+    const chain = new LossyChain(wallClock);
+    const { sync } = setup({ reader: chain });
+    const token = chain.token(TOKEN);
+    await watch(TOKEN);
+    await ageWatches();
+    chain.mine([token.transfer(ALICE, BOB, 1n)]);
+    const hidden = chain.mine([token.transfer(ALICE, CAROL, 2n)]).number;
+    chain.mine([token.transfer(BOB, CAROL, 3n)]);
+    chain.mineEmpty(5);
+
+    chain.hide = hidden; // the endpoint answers short while the window is ingested
+    const cursor = await catchUp(sync);
+    expect((await events()).map((e) => e.blockNumber)).not.toContain(hidden);
+
+    chain.hide = null;
+    const report = await sync.verify(1, cursor, 600_000);
+    expect(report).toMatchObject({ watches: 1, onChain: 3, missing: 1, repaired: 1 });
+    const repaired = (await events()).find((e) => e.blockNumber === hidden);
+    expect(repaired).toMatchObject({ status: "confirmed", address: TOKEN });
+    expect(repaired?.confirmedSeq).not.toBeNull(); // the matcher picks it up from its stream
+    // A second pass finds nothing: repairs are idempotent.
+    expect(await sync.verify(1, cursor, 600_000)).toMatchObject({ missing: 0, repaired: 0 });
+  });
+
+  it("never counts events from before a watch existed, or while its flow was paused", async () => {
+    const chain = new LossyChain(wallClock);
+    const { sync } = setup({ reader: chain });
+    const token = chain.token(TOKEN);
+    const other = chain.token(OTHER);
+    // A brand-new operator watch: its window predates it (no backfill by design).
+    await watch(TOKEN);
+    // A flow watch whose flow was resumed just now: events while it was paused are not owed.
+    const userId = newId("user");
+    const flowId = newId("flow");
+    await h.db.insert(users).values({ id: userId, address: addr(0xf10) });
+    await h.db.insert(flows).values({ id: flowId, ownerId: userId, name: "resumed", status: "active", currentVersion: 1, activatedAt: new Date() });
+    await h.db.insert(watches).values({ id: newId("watch"), chainId: CHAIN_ID, address: OTHER, topic0: TRANSFER, fast: false, source: "flow", flowId, createdAt: new Date(Date.now() - HOUR) });
+
+    chain.hide = chain.mine([token.transfer(ALICE, BOB, 1n), other.transfer(ALICE, BOB, 1n)]).number;
+    chain.mineEmpty(5);
+    const cursor = await catchUp(sync);
+    chain.hide = null;
+    expect(await sync.verify(1, cursor, 600_000)).toMatchObject({ watches: 0, missing: 0, repaired: 0 });
   });
 });

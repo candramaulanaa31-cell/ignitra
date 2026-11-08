@@ -44,6 +44,18 @@ export interface TickReport {
   readonly watchCount?: number;
 }
 
+export interface VerifyReport {
+  readonly from: number;
+  readonly to: number;
+  /** Watches live for the whole window (the ones compared). */
+  readonly watches: number;
+  readonly onChain: number;
+  readonly missing: number;
+  readonly repaired: number;
+  /** A few missing events, as block hash : log index. */
+  readonly sample: readonly string[];
+}
+
 export class LogTooDenseError extends Error {
   constructor(block: number) {
     super(`block ${block} alone exceeds the node's log limit for the watched set; split watches across listeners`);
@@ -183,6 +195,33 @@ export class ChainSync {
       ...(pending ? { pending } : {}),
       ...(deepReorg ? { deepReorg } : {}),
     };
+  }
+
+  /**
+   * Gap detector (Phase 9): re-reads a window that is already confirmed and compares it with what
+   * was stored, for the watches live during the whole window. Events that are missing (a node that
+   * answered short, a failover to an endpoint that lagged) are inserted as confirmed, so the
+   * matcher still runs their flows: late, never lost. Cursors never move.
+   */
+  async verify(from: number, to: number, marginMs: number): Promise<VerifyReport> {
+    const report: VerifyReport = { from, to, watches: 0, onChain: 0, missing: 0, repaired: 0, sample: [] };
+    if (to < from) return report;
+    const start = await this.#reader.blockByNumber(from);
+    if (!start) throw new Error(`node returned no block ${from}`);
+    this.#remember(start);
+    const eligible = await this.#store.verifiableWatches(new Date(start.timestamp * 1000 - marginMs));
+    const filter = WatchFilter.from(eligible);
+    if (filter.size === 0) return report;
+    const logs = (await this.#fetch(from, to, filter)).filter((l) => filter.matches(l));
+    const stored = await this.#store.confirmedIdentities(from, to);
+    const missing = logs.filter((l) => !stored.has(identity(l)));
+    let repaired = 0;
+    if (missing.length > 0) {
+      const times = await this.#timestamps(missing, from, to);
+      repaired = await this.#store.repairConfirmed(missing.map((l) => this.#row(l, times)));
+      this.#log.error({ from, to, missing: missing.length, repaired, sample: missing.slice(0, 3).map(identity) }, "gap detector: confirmed events were missing — inserted them");
+    }
+    return { from, to, watches: eligible.length, onChain: logs.length, missing: missing.length, repaired, sample: missing.slice(0, 5).map(identity) };
   }
 
   async #reconcile(from: number, to: number, filter: WatchFilter) {

@@ -20,6 +20,14 @@ export const listenerEnvSchema = workerEnvSchema.extend({
   REORG_REWIND_BLOCKS: envVar.withDefault(envVar.int(1, 100_000).default(1000)),
   /** First block on a fresh database. Default: the current confirmed head (no history replay). */
   LISTENER_START_BLOCK: envVar.optional(envVar.int(0, Number.MAX_SAFE_INTEGER)),
+  /**
+   * Gap detector: every SYNC_VERIFY_EVERY_MS (0 = off) re-read up to SYNC_VERIFY_MAX_BLOCKS of the
+   * newest confirmed blocks from the node and insert any watched event that is missing. A watch
+   * counts once it (and its flow) has been live SYNC_VERIFY_MARGIN_MS before a window.
+   */
+  SYNC_VERIFY_EVERY_MS: envVar.withDefault(envVar.int(0, 86_400_000).default(300_000)),
+  SYNC_VERIFY_MAX_BLOCKS: envVar.withDefault(envVar.int(1, 1_000_000).default(6000)),
+  SYNC_VERIFY_MARGIN_MS: envVar.withDefault(envVar.int(0, 86_400_000).default(600_000)),
   /** Health is degraded when the confirmed cursor trails the confirmed head by more than this. */
   LISTENER_LAG_ALERT_BLOCKS: envVar.withDefault(envVar.int(1, 10_000_000).default(600)),
   LISTENER_HEALTH_HOST: envVar.withDefault(z.string().default("127.0.0.1")),

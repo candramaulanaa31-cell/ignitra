@@ -2,7 +2,7 @@ import type { Logger } from "pino";
 import type { EndpointStats } from "@ignitra/chain";
 import type { HeadWatcher } from "./head";
 import type { ListenerStore } from "./store";
-import type { ChainSync, TickReport } from "./sync";
+import type { ChainSync, TickReport, VerifyReport } from "./sync";
 
 export interface HealthSnapshot {
   status: "starting" | "ok" | "degraded";
@@ -20,6 +20,23 @@ export interface HealthSnapshot {
   last_error: string | null;
   consecutive_errors: number;
   rpc: EndpointStats[];
+  /** The gap detector: how far confirmed blocks were re-read, and what was missing. Null when off. */
+  verification: {
+    verified_block: number | null;
+    last_checked_at: string | null;
+    last_window: { from: number; to: number; missing: number; repaired: number } | null;
+    missing_total: number;
+    last_error: string | null;
+  } | null;
+}
+
+export interface VerifyOptions {
+  /** How often confirmed blocks are re-read (0 disables the gap detector). */
+  readonly everyMs: number;
+  /** At most this many blocks per check: the newest ones (older ones are skipped, not queued). */
+  readonly maxBlocks: number;
+  /** A watch counts for a window only if it (and its flow) was live this long before the window. */
+  readonly marginMs: number;
 }
 
 export class ListenerRuntime {
@@ -31,6 +48,12 @@ export class ListenerRuntime {
   readonly #pollMs: number;
   readonly #lagAlert: number;
   readonly #onProgress: () => void;
+  readonly #verifyOpts: VerifyOptions | null;
+  #lastVerifyAt = 0;
+  #lastVerify: (VerifyReport & { at: number }) | null = null;
+  #verifiedBlock: number | null = null;
+  #missingTotal = 0;
+  #verifyError: string | null = null;
   #last: TickReport | null = null;
   #lastOkAt: number | null = null;
   #lastError: string | null = null;
@@ -46,6 +69,7 @@ export class ListenerRuntime {
     lagAlertBlocks: number;
     /** Called after a leader tick that wrote events (wakes the matcher). */
     onProgress?: () => void;
+    verify?: VerifyOptions;
   }) {
     this.#sync = deps.sync;
     this.#store = deps.store;
@@ -55,6 +79,43 @@ export class ListenerRuntime {
     this.#pollMs = deps.pollIntervalMs;
     this.#lagAlert = deps.lagAlertBlocks;
     this.#onProgress = deps.onProgress ?? (() => {});
+    this.#verifyOpts = deps.verify && deps.verify.everyMs > 0 ? deps.verify : null;
+  }
+
+  /** Gap detector: re-reads the confirmed blocks since the last check (bounded), repairs gaps. */
+  async #verify(report: TickReport): Promise<void> {
+    const opts = this.#verifyOpts;
+    const cursor = report.confirmedCursor;
+    if (!opts || cursor === undefined || Date.now() - this.#lastVerifyAt < opts.everyMs) return;
+    this.#lastVerifyAt = Date.now();
+    try {
+      const state = await this.#store.verification();
+      if (!state) {
+        // First run: start from here (earlier blocks were ingested under unknown watch history).
+        await this.#store.saveVerification({ verifiedBlock: cursor, checked: 0, missing: 0, window: null });
+        this.#verifiedBlock = cursor;
+        return;
+      }
+      this.#missingTotal = state.missingTotal;
+      this.#verifiedBlock = state.verifiedBlock;
+      if (cursor <= state.verifiedBlock) return;
+      const from = Math.max(state.verifiedBlock + 1, cursor - opts.maxBlocks + 1);
+      const result = await this.#sync.verify(from, cursor, opts.marginMs);
+      await this.#store.saveVerification({
+        verifiedBlock: cursor,
+        checked: cursor - from + 1,
+        missing: result.missing,
+        window: result.missing > 0 ? { from, to: cursor, count: result.missing, sample: [...result.sample] } : null,
+      });
+      this.#lastVerify = { ...result, at: Date.now() };
+      this.#verifiedBlock = cursor;
+      this.#missingTotal += result.missing;
+      this.#verifyError = null;
+      if (result.repaired > 0) this.#onProgress();
+    } catch (err) {
+      this.#verifyError = err instanceof Error ? err.message : String(err);
+      this.#log.warn({ err }, "gap detector check failed (sync continues)");
+    }
   }
 
   async run(signal: AbortSignal): Promise<void> {
@@ -79,6 +140,8 @@ export class ListenerRuntime {
           // Catching up: go again immediately instead of sleeping.
           if (report.confirmed && report.confirmed.to < (report.confirmedHead ?? 0)) delay = 0;
           await this.#writeStatus(report, null);
+          // Only when caught up: the gap detector never competes with ingestion.
+          if (delay > 0) await this.#verify(report);
         } else {
           if (wasLeader) this.#log.warn("lost listener lease — standby");
           wasLeader = false;
@@ -130,6 +193,15 @@ export class ListenerRuntime {
       last_error: this.#lastError,
       consecutive_errors: this.#errors,
       rpc: this.#rpcStats(),
+      verification: this.#verifyOpts
+        ? {
+            verified_block: this.#verifiedBlock,
+            last_checked_at: this.#lastVerify ? new Date(this.#lastVerify.at).toISOString() : null,
+            last_window: this.#lastVerify ? { from: this.#lastVerify.from, to: this.#lastVerify.to, missing: this.#lastVerify.missing, repaired: this.#lastVerify.repaired } : null,
+            missing_total: this.#missingTotal,
+            last_error: this.#verifyError,
+          }
+        : null,
     };
   }
 }

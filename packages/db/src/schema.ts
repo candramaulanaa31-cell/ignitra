@@ -824,6 +824,22 @@ export type ContractAbi = typeof contractAbis.$inferSelect;
 export type FlowEvaluation = typeof flowEvaluations.$inferSelect;
 export type FlowStats = typeof flowStats.$inferSelect;
 // ---------------------------------------------------------------------------
+// chain_verification — the gap detector (Phase 9): confirmed windows re-read from the node and
+// compared with what was stored; how far it got, and what was missing (and repaired).
+// ---------------------------------------------------------------------------
+export const chainVerification = pgTable("chain_verification", {
+  chainId: integer("chain_id").primaryKey(),
+  /** Every confirmed block up to here was re-read and compared. */
+  verifiedBlock: bigint("verified_block", { mode: "number" }).notNull(),
+  checkedBlocks: bigint("checked_blocks", { mode: "number" }).notNull().default(0),
+  missingTotal: bigint("missing_total", { mode: "number" }).notNull().default(0),
+  lastCheckedAt: ts("last_checked_at"),
+  lastMissingAt: ts("last_missing_at"),
+  lastMissing: jsonb("last_missing").$type<{ from: number; to: number; count: number; sample: string[] }>(),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+});
+
+// ---------------------------------------------------------------------------
 // audit_log — who changed what in an account (Phase 9): flows, connections, API keys,
 // onchain grants, templates, account settings; also what the operator (CLI) and the system
 // (auto-pause) did. Never holds secrets: names, types, ids and which settings changed.
@@ -864,4 +880,5 @@ export type ApiKeyRow = typeof apiKeys.$inferSelect;
 export type OnchainGrantRow = typeof onchainGrants.$inferSelect;
 export type OnchainActionRow = typeof onchainActions.$inferSelect;
 export type AuditLogRow = typeof auditLog.$inferSelect;
+export type ChainVerificationRow = typeof chainVerification.$inferSelect;
 export type NewInboundEvent = typeof inboundEvents.$inferInsert;

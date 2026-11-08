@@ -37,6 +37,7 @@ import {
 import { createActionModules, retryRun } from "@ignitra/actions";
 import { DELIVERY_USAGE, deliveryCommand } from "./cli-delivery";
 import { explorerApiUrl, listenerEnvSchema } from "./config";
+import { collectMetrics, toPrometheus } from "./metrics";
 import { WatchFilter } from "./filter";
 import { DbAbiStore, ListenerStore, addWatch } from "./store";
 
@@ -50,6 +51,7 @@ import { DbAbiStore, ListenerStore, addWatch } from "./store";
  *   flow update <id> <file.json>
  *   runs [--flow <id>] [--limit n]          queued/finished runs with condition traces
  *   evals --flow <id> [--limit n]            why matching events did NOT run
+ *   metrics [--prometheus]                   listener lag, gap detector, RPC errors, queue, latency, outcomes
  *   dead-letters [--owner 0x…] [--limit n]   runs whose steps failed for good
  *   run retry <run id>                       run those steps again (delivered steps are not repeated)
  *
@@ -72,7 +74,7 @@ const USAGE = `usage: pnpm ops <command>
   flow update <id> <file.json>
   runs [--flow <id>] [--limit n]
   evals --flow <id> [--limit n]
-  dead-letters [--owner 0x..] [--limit n] | run retry <run-id>
+  dead-letters [--owner 0x..] [--limit n] | run retry <run-id> | metrics [--prometheus]
   user plan <wallet> <free|builder|team> | usage [--owner 0x..]
   template list | template hide <slug> | template unhide <slug>
   demo setup <wallet> [--token 0x..] [--min 1000]
@@ -102,6 +104,7 @@ const { values, positionals } = parseArgs({
   options: {
     fast: { type: "boolean", default: false },
     paused: { type: "boolean", default: false },
+    prometheus: { type: "boolean", default: false },
     note: { type: "string" },
     owner: { type: "string" },
     name: { type: "string" },
@@ -357,6 +360,11 @@ try {
     if (!limits.overage) {
       console.log(`warning: the owner is on the ${owner?.plan ?? "free"} plan (${limits.runsPerMonth} runs/month, no overage); the demo stops when they are used. Give it room: pnpm ops user plan ${wallet} team`);
     }
+  } else if (cmd === "metrics") {
+    // What /metrics serves, readable (or --prometheus for the exposition text).
+    const m = await collectMetrics(db, chainId);
+    if (values.prometheus) process.stdout.write(toPrometheus(m, chainId));
+    else console.log(JSON.stringify(m, null, 2));
   } else if (cmd === "dead-letters") {
     // Runs whose steps failed for good, across accounts (or one with --owner).
     const rows = await db

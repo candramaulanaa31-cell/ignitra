@@ -8,6 +8,7 @@ import { AbiRegistry, BlockscoutAbiFetcher, EventDecoder, createRpcChainReader }
 import { createDb } from "@ignitra/db";
 import { Matcher, MatcherRuntime, TokenInfo, createTriggerModules } from "@ignitra/engine";
 import { explorerApiUrl, listenerEnvSchema } from "./config";
+import { collectMetrics, toPrometheus } from "./metrics";
 import { HeadWatcher } from "./head";
 import pkg from "../package.json" with { type: "json" };
 import { ListenerRuntime } from "./runtime";
@@ -132,6 +133,7 @@ await runService(logger, async () => {
       lagAlertBlocks: env.LISTENER_LAG_ALERT_BLOCKS,
       // Wake the matcher right after events are committed: event → run latency ≈ one matcher tick.
       onProgress: () => matcherRuntime?.wakeup.notify(),
+      verify: { everyMs: env.SYNC_VERIFY_EVERY_MS, maxBlocks: env.SYNC_VERIFY_MAX_BLOCKS, marginMs: env.SYNC_VERIFY_MARGIN_MS },
     });
   }
 
@@ -143,6 +145,7 @@ await runService(logger, async () => {
       const degraded = [sync, matcher, execution].some((h) => h?.status === "degraded");
       return { status: degraded ? "degraded" : (sync?.status ?? matcher?.status ?? execution?.status ?? "ok"), roles: [...roles], sync, matcher, runner: execution };
     },
+    metrics: async () => toPrometheus(await collectMetrics(db.db, chain.id), chain.id),
   };
   const server = env.LISTENER_HEALTH_PORT > 0 ? await startHealthServer(health, env.LISTENER_HEALTH_HOST, env.LISTENER_HEALTH_PORT) : null;
 
