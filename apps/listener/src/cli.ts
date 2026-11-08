@@ -38,10 +38,11 @@ import {
   updateFlowDefinition,
   type FlowServiceDeps,
 } from "@ignitra/engine";
-import { createActionModules, keyUsage, keyringFromRunnerEnv, retryRun, rewrapAll } from "@ignitra/actions";
+import { createActionModules, emailFromEnv, googleFromEnv, keyUsage, keyringFromRunnerEnv, retryRun, rewrapAll, vapidFromEnv } from "@ignitra/actions";
 import { DELIVERY_USAGE, deliveryCommand } from "./cli-delivery";
 import { explorerApiUrl, listenerEnvSchema } from "./config";
 import { collectMetrics, toPrometheus } from "./metrics";
+import { runDoctor } from "./doctor";
 import { WatchFilter } from "./filter";
 import { DbAbiStore, ListenerStore, addWatch } from "./store";
 
@@ -58,6 +59,9 @@ import { DbAbiStore, ListenerStore, addWatch } from "./store";
  *   metrics [--prometheus]                   listener lag, gap detector, RPC errors, queue, latency, outcomes
  *   dead-letters [--owner 0x…] [--limit n]   runs whose steps failed for good
  *   run retry <run id>                       run those steps again (delivered steps are not repeated)
+ *
+ * Deployment
+ *   doctor                                   checks the configuration against the real services (exit 1 on a failure)
  *
  * Keys and backups
  *   keys status                              stored secrets per encryption key id
@@ -86,6 +90,7 @@ const USAGE = `usage: pnpm ops <command>
   runs [--flow <id>] [--limit n]
   evals --flow <id> [--limit n]
   dead-letters [--owner 0x..] [--limit n] | run retry <run-id> | metrics [--prometheus]
+  doctor
   keys status | keys rewrap [--dry-run]
   db export <file[.gz]> | db verify <file> | db import <file>
   user plan <wallet> <free|builder|team> | usage [--owner 0x..]
@@ -374,6 +379,33 @@ try {
     if (!limits.overage) {
       console.log(`warning: the owner is on the ${owner?.plan ?? "free"} plan (${limits.runsPerMonth} runs/month, no overage); the demo stops when they are used. Give it room: pnpm ops user plan ${wallet} team`);
     }
+  } else if (cmd === "doctor") {
+    const attempt = <T>(build: () => T): T | Error => {
+      try {
+        return build();
+      } catch (err) {
+        return err instanceof Error ? err : new Error(String(err));
+      }
+    };
+    const checks = await runDoctor({
+      db: handle,
+      chain: chainConfigFromEnv(env),
+      keyring: attempt(() => keyringFromRunnerEnv(env)),
+      webhookMaster: env.WEBHOOK_SIGNING_SECRET ?? null,
+      webhookMasterPrevious: env.WEBHOOK_SIGNING_SECRET_PREVIOUS ?? null,
+      vapid: attempt(() => vapidFromEnv(env)),
+      email: attempt(() => emailFromEnv(env)),
+      google: attempt(() => googleFromEnv(env)),
+      urls: { apiPublic: env.API_PUBLIC_URL ?? null, web: env.WEB_URL ?? null, cors: env.CORS_ORIGINS, siweDomains: env.SIWE_DOMAINS ?? null },
+      services: { trustLayer: env.TRUST_LAYER_API_URL ?? null, vigil: env.VIGIL_API_URL ?? null },
+      explorerApiKey: Boolean(env.EXPLORER_API_KEY),
+      mandateRequired: env.ONCHAIN_MANDATE_REQUIRED,
+    });
+    for (const c of checks) console.log(`${c.status === "ok" ? "ok  " : c.status === "warn" ? "WARN" : "FAIL"}  ${c.area.padEnd(15)} ${c.detail}`);
+    const failing = checks.filter((c) => c.status === "fail").length;
+    const warnings = checks.filter((c) => c.status === "warn").length;
+    console.log(`\n${failing} failing, ${warnings} warning(s)`);
+    if (failing > 0) process.exitCode = 1;
   } else if (cmd === "keys" && (sub === "status" || sub === "rewrap")) {
     // ENCRYPTION_KEY rotation: new key active, old one in ENCRYPTION_KEYS_PREVIOUS, then rewrap.
     const keyring = keyringFromRunnerEnv(env);

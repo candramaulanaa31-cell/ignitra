@@ -612,6 +612,15 @@ Not validated live yet:
 | `ignitra_step_success_rate` | < 0.9 for an action type, with 20+ steps an hour | A destination or integration is failing |
 | `ignitra_dead_letters` | jumps | Many owners have failed steps to retry |
 
+**`pnpm ops doctor`.** Checks a deployment's configuration against the real services and exits 1 on a failure. Run it after every change to the environment.
+
+- **Core.** The database and pending migrations. Every RPC endpoint's chain id and head (only the host is printed: RPC URLs carry API keys). Whether `ENCRYPTION_KEY` still opens the stored secrets: it catches a key replaced under the same `ENCRYPTION_KEY_ID`, which `keys status` cannot.
+- **Settings.** The webhook secret and an unfinished rotation. That the VAPID key pair matches. That the public URLs are https, and that CORS and the sign-in domains include the web app.
+- **Email.** Resend: the key, and that `EMAIL_FROM`'s domain is verified. Brevo: that the sender is active.
+- **Google.** The OAuth client is presented with a made-up code, and Google says whether it knows the client.
+
+Nothing is sent to users and nothing is written.
+
 **Rotating `ENCRYPTION_KEY`.** Secrets use envelope encryption, so a rotation re-wraps data keys and never re-encrypts the data.
 
 1. `pnpm gen:secret`. On every service set the new `ENCRYPTION_KEY`, a new `ENCRYPTION_KEY_ID` (e.g. `k2`), and the old key in `ENCRYPTION_KEYS_PREVIOUS` (`k1:<old>`). Restart. Everything keeps working, and new secrets use the new key.
@@ -639,7 +648,7 @@ Not validated live yet:
 | Every trigger on a live chain or a fork | ✅ | See the matrix below |
 | No duplicate runs for one event | ✅ | Unique key per event and flow in Postgres; live: 0 duplicate keys, also across two restarts (Phase 7); fork: a restart replays nothing |
 | Retries + idempotency | ✅ | Executor tests (backoff, resume at the failed step, same keys); live: distinct idempotency keys on every delivery |
-| Web Push on a phone | ⏳ | Needs your phone: the server path is tested, a real device is not |
+| Web Push on a phone | ⏳ | Through a real push service: ✅ (below). On a phone: needs your phone and the app on public HTTPS |
 | Webhook signature verifiable with the SDK | ✅ | Live (Phase 8): 31/31 deliveries verified by `parseWebhook` |
 | Google Sheets + email | ⏳ | Validated against local Resend and Google stubs (Phase 6); real accounts need your keys and OAuth client |
 | Run trace explains every skip and failure | ✅ | Condition traces, sampled evaluations with reasons, per-step errors, dead letters |
@@ -661,6 +670,17 @@ Trigger matrix. The fork test (`apps/listener/src/triggers.fork.test.ts`) runs a
 | INBOUND_WEBHOOK | Phases 5, 6 (incl. a duplicate key) | not a chain trigger |
 | VIGIL_ALERT | Phase 8 (VIGIL's signed request and a real finding verified) | not a chain trigger |
 
+Web Push through a real push service (2026-11-08). Headless Edge with the production web build, the backend in one process:
+
+| Check | Result |
+|---|---|
+| Subscribe | Settings → Enable on this device: the app's own code subscribed with the server's VAPID key, and the API stored a device on `wns2-pn1p.notify.windows.com` (Microsoft's push service) |
+| Deliver | A real INBOUND_WEBHOOK request ran a WEB_PUSH step: the runner sent it through the SSRF-guarded client, and the push service accepted it (`delivered: 1`, 554 ms) |
+| Show | IGNITRA's service worker showed "Order A-77 paid / 120 USDG from 0xabc…def" with the rendered https link, tagged per flow |
+| Remove | Unsubscribed in the browser and removed through the API (204) |
+
+This run found a real bug, now fixed. A request sent 24 ms after its flow was created never ran: the matcher's flow index was cached and the stream's offset moved past the request. Rows newer than the index are now matched with an index read after them, and a regression test covers confirmed, fast and inbound flows.
+
 Still open: the npm release; Web Push on a phone; real Resend and Google accounts; a run from an organic VIGIL alert; ONCHAIN_TX on mainnet (it needs a Safe we own; the fork test covers it); a `scored` TRUST LAYER answer.
 
 ## Scripts
@@ -677,7 +697,7 @@ Still open: the npm release; Web Push on a phone; real Resend and Google account
 | `pnpm dev:api` | HTTP API (separate process needs real Postgres; with PGlite use the `api` role) |
 | `pnpm dev:web` | web app on :3000; `/api` proxies to `API_URL` |
 | `pnpm gen:secret` / `pnpm gen:vapid` | secrets (base64url) / Web Push VAPID keys |
-| `pnpm ops …` | flows, runs, traces, evaluations, connections, push, watches, sync status, verify, `user plan`, `usage`, `template list / hide / unhide`, `demo setup`, `metrics`, `dead-letters`, `run retry`, `keys status / rewrap`, `db export / verify / import` |
+| `pnpm ops …` | flows, runs, traces, evaluations, connections, push, watches, sync status, verify, `user plan`, `usage`, `template list / hide / unhide`, `demo setup`, `doctor`, `metrics`, `dead-letters`, `run retry`, `keys status / rewrap`, `db export / verify / import` |
 
 ## Notes
 

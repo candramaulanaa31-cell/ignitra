@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
 import { sql } from "drizzle-orm";
 import { drizzle as drizzlePg } from "drizzle-orm/node-postgres";
+import { readMigrationFiles } from "drizzle-orm/migrator";
 import { migrate as migratePg } from "drizzle-orm/node-postgres/migrator";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import { drizzle as drizzlePglite } from "drizzle-orm/pglite";
@@ -44,6 +45,22 @@ export function parseDatabaseUrl(url: string, rootDir: string = findWorkspaceRoo
     return { driver: "pglite", dataDir: isAbsolute(rest) ? rest : resolve(rootDir, rest) };
   }
   throw new Error("DATABASE_URL must start with postgres://, postgresql:// or pglite://");
+}
+
+/** Migrations in the repository vs applied to the database (the migrator applies those newer than the last one). */
+export async function migrationStatus(db: Database): Promise<{ applied: number; available: number; pending: number }> {
+  const files = readMigrationFiles({ migrationsFolder: MIGRATIONS_DIR });
+  let applied = 0;
+  let last = 0;
+  try {
+    const result = (await db.execute(sql`select count(*)::int as n, max(created_at)::text as last from drizzle.__drizzle_migrations`)) as unknown as { rows?: Array<{ n: number; last: string | null }> };
+    const [row] = result.rows ?? [];
+    applied = Number(row?.n ?? 0);
+    last = Number(row?.last ?? 0);
+  } catch {
+    // No migrations table yet: nothing applied.
+  }
+  return { applied, available: files.length, pending: files.filter((f) => f.folderMillis > last).length };
 }
 
 export class DatabaseLockedError extends Error {

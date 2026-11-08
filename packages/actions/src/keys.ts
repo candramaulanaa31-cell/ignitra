@@ -1,4 +1,4 @@
-import { and, asc, count, eq, gt, isNotNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, isNotNull, ne, or, sql } from "drizzle-orm";
 import { DecryptionError, rewrapSecret, type EncryptedEnvelope, type Keyring } from "@ignitra/core/server";
 import { connections, onchainGrants, type Database } from "@ignitra/db";
 
@@ -28,6 +28,8 @@ interface Source {
   readonly context: (id: string) => string;
   usage(db: Database): Promise<Array<{ kid: string | null; n: number }>>;
   page(db: Database, activeKid: string, after: string, limit: number): Promise<Array<{ id: string; envelope: EncryptedEnvelope }>>;
+  /** The newest secrets, whatever key they are under. */
+  latest(db: Database, limit: number): Promise<Array<{ id: string; envelope: EncryptedEnvelope }>>;
   replace(db: Database, id: string, before: EncryptedEnvelope, after: EncryptedEnvelope): Promise<boolean>;
 }
 
@@ -45,6 +47,11 @@ const SOURCES: readonly Source[] = [
           .orderBy(asc(connections.id))
           .limit(limit)
       ).map((r) => ({ id: r.id, envelope: r.envelope as unknown as EncryptedEnvelope })),
+    latest: async (db, limit) =>
+      (await db.select({ id: connections.id, envelope: connections.secretEnc }).from(connections).orderBy(desc(connections.id)).limit(limit)).map((r) => ({
+        id: r.id,
+        envelope: r.envelope as unknown as EncryptedEnvelope,
+      })),
     replace: async (db, id, before, after) =>
       (
         await db
@@ -65,6 +72,15 @@ const SOURCES: readonly Source[] = [
           .from(onchainGrants)
           .where(and(gt(onchainGrants.id, after), isNotNull(onchainGrants.sessionKeyEnc), ne(sql`${onchainGrants.sessionKeyEnc}->>'kid'`, activeKid)))
           .orderBy(asc(onchainGrants.id))
+          .limit(limit)
+      ).map((r) => ({ id: r.id, envelope: r.envelope as unknown as EncryptedEnvelope })),
+    latest: async (db, limit) =>
+      (
+        await db
+          .select({ id: onchainGrants.id, envelope: onchainGrants.sessionKeyEnc })
+          .from(onchainGrants)
+          .where(isNotNull(onchainGrants.sessionKeyEnc))
+          .orderBy(desc(onchainGrants.id))
           .limit(limit)
       ).map((r) => ({ id: r.id, envelope: r.envelope as unknown as EncryptedEnvelope })),
     replace: async (db, id, before, after) =>
@@ -88,6 +104,28 @@ export async function keyUsage(db: Database, keyring: Keyring): Promise<KeyUsage
   }
   const pending = Object.entries(byKid).reduce((sum, [kid, n]) => (kid === keyring.activeKid ? sum : sum + n), 0);
   return { activeKid: keyring.activeKid, byKid, pending };
+}
+
+/**
+ * Opens the newest `sample` secrets of each table with the keyring, whatever key they are under,
+ * to prove ENCRYPTION_KEY still matches the data: a new key under the old ENCRYPTION_KEY_ID would
+ * leave every secret unreadable while `keys status` looks fine. Only the data keys are unwrapped;
+ * nothing is written.
+ */
+export async function verifySecrets(db: Database, keyring: Keyring, opts: { sample?: number } = {}): Promise<{ checked: number; failed: Array<{ table: string; id: string; error: string }> }> {
+  let checked = 0;
+  const failed: Array<{ table: string; id: string; error: string }> = [];
+  for (const source of SOURCES) {
+    for (const row of await source.latest(db, opts.sample ?? 25)) {
+      checked++;
+      try {
+        rewrapSecret(keyring, row.envelope, source.context(row.id));
+      } catch (err) {
+        failed.push({ table: source.name, id: row.id, error: err instanceof DecryptionError ? err.message : String(err) });
+      }
+    }
+  }
+  return { checked, failed };
 }
 
 export interface RewrapReport {
