@@ -55,7 +55,7 @@ describe("gallery", () => {
     expect(data.find((t) => t.slug === "big-buy-telegram")).toMatchObject({ min_plan: "free", trigger_type: "TOKEN_TRANSFER", action_types: ["TELEGRAM"] });
     expect(data.find((t) => t.slug === "daily-supply-sheets")?.min_plan).toBe("builder");
     const security = (await app.inject({ method: "GET", url: "/v1/templates?category=security" })).json().data as Array<{ slug: string }>;
-    expect(security.map((t) => t.slug)).toEqual(["proxy-upgraded-webhook", "ownership-transferred-telegram", "paused-telegram", "mint-burn-telegram"]);
+    expect(security.map((t) => t.slug)).toEqual(["proxy-upgraded-webhook", "ownership-transferred-telegram", "paused-telegram", "vigil-upgrade-webhook", "vigil-critical-telegram", "risky-buyer-telegram", "mint-burn-telegram"]);
   });
 
   it("shows one template with its placeholders, outline and share text", async () => {

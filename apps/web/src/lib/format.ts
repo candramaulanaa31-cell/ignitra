@@ -36,6 +36,7 @@ export function statusClass(status: string): string {
     case "succeeded":
     case "active":
     case "ok":
+    case "confirmed":
       return "s-ok";
     case "partial":
     case "paused":
@@ -45,10 +46,14 @@ export function statusClass(status: string): string {
     case "failed":
     case "disabled":
     case "undetermined":
+    case "denied":
+    case "reverted":
       return "s-fail";
     case "queued":
     case "running":
     case "pending":
+    case "signed":
+    case "sent":
       return "s-live";
     default:
       return "s-skip";
@@ -66,6 +71,8 @@ export const LABELS: Readonly<Record<string, string>> = {
   STATE_CHANGE: "State change",
   SCHEDULE: "Schedule",
   INBOUND_WEBHOOK: "Inbound webhook",
+  NEW_LAUNCH: "Pons launch",
+  VIGIL_ALERT: "VIGIL alert",
   WEBHOOK: "Webhook",
   TELEGRAM: "Telegram",
   WEB_PUSH: "Web Push",
@@ -73,6 +80,7 @@ export const LABELS: Readonly<Record<string, string>> = {
   HTTP_REQUEST: "HTTP request",
   EMAIL: "Email",
   GOOGLE_SHEETS: "Google Sheets",
+  ONCHAIN_TX: "Onchain transaction",
   conditions_failed: "conditions failed",
   rate_limited: "hourly cap",
   plan_limited: "plan quota",

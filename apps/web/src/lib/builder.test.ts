@@ -127,7 +127,7 @@ describe("server issues and definitions", () => {
       trigger: { type: "TOKEN_TRANSFER", params: { token: "0xabc", wallet: "", direction: "any" } },
       conditions: { mode: "all", rows: [{ field: "percent_of_supply", op: ">=", value: "0.5" }] },
       actions: [{ step_id: "notify", type: "TELEGRAM", params: { connection_id: "conn_1", text: "hi", parse_mode: "html", silent: false } }],
-      settings: { mode: "confirmed", max_runs_per_hour: 60 },
+      settings: { mode: "confirmed", max_runs_per_hour: 60, onchain: false },
     };
     const built = toDefinition(draft, { trigger: TRIGGER_FORMS.TOKEN_TRANSFER, action: (t) => ACTION_FORMS[t] }, fields);
     expect(built).toEqual({
@@ -135,7 +135,7 @@ describe("server issues and definitions", () => {
         trigger: { type: "TOKEN_TRANSFER", params: { token: "0xabc" } },
         conditions: { all: [{ field: "percent_of_supply", op: ">=", value: 0.5 }] },
         actions: [{ step_id: "notify", type: "TELEGRAM", params: { connection_id: "conn_1", text: "hi", parse_mode: "html", silent: false } }],
-        settings: { mode: "confirmed", max_runs_per_hour: 60 },
+        settings: { mode: "confirmed", max_runs_per_hour: 60, onchain: false },
       },
     });
   });

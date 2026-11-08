@@ -30,7 +30,9 @@ const EXAMPLE = [
 const FEATURED = ["big-buy-telegram", "new-holder-sheets", "treasury-low-email", "proxy-upgraded-webhook", "daily-supply-sheets", "whale-sell-push"];
 
 export default async function Home() {
-  const [health, demo] = await Promise.all([serverGet<Health>("/health", 10), serverGet<{ data: DemoData }>("/v1/demo", 5)]);
+  const [answer, demo] = await Promise.all([serverGet<Partial<Health>>("/health", 10), serverGet<{ data: DemoData }>("/v1/demo", 5)]);
+  // Only IGNITRA's own answer counts: another service on API_URL's port is "unreachable", not a crash.
+  const health = answer && typeof answer.version === "string" && typeof answer.chain?.name === "string" && typeof answer.chain.id === "number" ? (answer as Health) : null;
   const featured = FEATURED.map((s) => OFFICIAL_TEMPLATES.find((t) => t.slug === s)).filter((t) => t !== undefined);
   return (
     <div className="wrap">

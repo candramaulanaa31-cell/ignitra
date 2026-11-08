@@ -1,6 +1,7 @@
 import { normalizeAddress, normalizeHash, redactUrl, type NormalizedAddress, type NormalizedHash } from "@ignitra/core";
 import {
   CallRevertedError,
+  TransactionRejectedError,
   LogRangeTooLargeError,
   RpcQueryError,
   StateUnavailableError,
@@ -66,9 +67,11 @@ export function asQueryError(method: string, code: number | null, message: strin
     if (range) return range;
   }
   if (STATE_RE.test(message)) return new StateUnavailableError(`${method}: ${message}`);
-  if (method === "eth_call" && (code === 3 || REVERT_RE.test(message))) {
-    return new CallRevertedError(`eth_call: ${message}`, typeof data === "string" && /^0x[0-9a-fA-F]*$/.test(data) ? (data.toLowerCase() as `0x${string}`) : null);
+  if ((method === "eth_call" || method === "eth_estimateGas") && (code === 3 || REVERT_RE.test(message))) {
+    return new CallRevertedError(`${method}: ${message}`, typeof data === "string" && /^0x[0-9a-fA-F]*$/.test(data) ? (data.toLowerCase() as `0x${string}`) : null);
   }
+  // A refused transaction is an answer, not an unhealthy node (and must not be re-sent elsewhere blindly).
+  if (method === "eth_sendRawTransaction" && code !== null) return new TransactionRejectedError(`${method}: ${message}`);
   return null;
 }
 

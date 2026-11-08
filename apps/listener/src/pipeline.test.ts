@@ -19,7 +19,7 @@ import {
   watches,
   type DbHandle,
 } from "@ignitra/db";
-import { Matcher, TokenInfo, createFlow, createTriggerModules, ensureUser, setFlowStatus, type FlowServiceDeps } from "@ignitra/engine";
+import { Matcher, TokenInfo, createFlow, createTriggerModules, ensureUser, setFlowStatus, type FlowServiceDeps, type TrustLookup } from "@ignitra/engine";
 import { ListenerStore } from "./store";
 import { ChainSync } from "./sync";
 
@@ -68,7 +68,7 @@ interface Pipeline {
   confirm(n?: number): Promise<void>;
 }
 
-async function pipeline(opts: { stateWindow?: number } = {}): Promise<Pipeline> {
+async function pipeline(opts: { stateWindow?: number; trust?: TrustLookup } = {}): Promise<Pipeline> {
   let clockOffset = 0;
   // logTimestamps: false mirrors Robinhood Chain's RPC, whose logs carry blockTimestamp "0x0".
   const chain = new FakeChain({ logTimestamps: false, timestampOf: () => Math.floor(Date.now() / 1000) + clockOffset, ...(opts.stateWindow ? { stateWindow: opts.stateWindow } : {}) });
@@ -92,6 +92,7 @@ async function pipeline(opts: { stateWindow?: number } = {}): Promise<Pipeline> 
     logger: silent,
     owner: "matcher-test",
     options: { pollIntervalMs: 0, flowsCacheMs: 0, evaluationsPerMinute: 10_000 },
+    ...(opts.trust ? { trust: opts.trust } : {}),
   });
   const p: Pipeline = {
     chain,
@@ -314,5 +315,46 @@ describe("other triggers end-to-end", () => {
     });
     await p.confirm();
     expect(await allRuns()).toHaveLength(1); // still below: no repeat
+  });
+});
+
+describe("TRUST LAYER conditions", () => {
+  it("runs only for counterparties scored at or above the bar; pending and failing ones are traced, never guessed", async () => {
+    const asked: string[] = [];
+    const scores: Record<string, { status: "scored" | "pending"; score: number | null; band: string | null }> = {
+      [ALICE]: { status: "scored", score: 812, band: "strong" },
+      [BOB]: { status: "scored", score: 190, band: "severe_risk" },
+      [CAROL]: { status: "pending", score: null, band: null },
+    };
+    const trust: TrustLookup = {
+      async score(address) {
+        asked.push(address);
+        const r = scores[address];
+        return r ? { ...r, risk_level: null } : { status: "unavailable", score: null, band: null, risk_level: null };
+      },
+    };
+    const p = await pipeline({ trust });
+    const gated = await flow(p, {
+      trigger: { type: "TOKEN_TRANSFER", params: { token: TOKEN, wallet: WHALE, direction: "out" } },
+      conditions: { all: [{ field: "amount_decimal", op: ">=", value: "1" }, { field: "counterparty_trust_score", op: ">=", value: 600 }] },
+    });
+    // A flow that never reads a score must never cause a lookup.
+    const plain = await flow(p, { trigger: { type: "TOKEN_TRANSFER", params: { token: TOKEN } } }, "plain");
+    p.chain.mine([p.token.transfer(WHALE, ALICE, 5_000_000n), p.token.transfer(WHALE, BOB, 5_000_000n), p.token.transfer(WHALE, CAROL, 5_000_000n), p.token.transfer(WHALE, ALICE, 1n)]);
+    await p.confirm();
+
+    const gatedRuns = (await allRuns()).filter((r) => r.flowId === gated);
+    expect(gatedRuns).toHaveLength(1);
+    expect(gatedRuns[0]?.triggerEvent).toMatchObject({ to: ALICE, counterparty: ALICE, counterparty_trust_score: 812, counterparty_trust_band: "strong", counterparty_trust_status: "scored" });
+    expect((await allRuns()).filter((r) => r.flowId === plain)).toHaveLength(4);
+    expect((await allRuns()).find((r) => r.flowId === plain)?.triggerEvent).not.toHaveProperty("counterparty_trust_score");
+
+    const evaluations = await h.db.select().from(flowEvaluations).where(eq(flowEvaluations.flowId, gated));
+    const byTo = Object.fromEntries(evaluations.map((e) => [(e.triggerEvent as { to: string }).to + ":" + (e.triggerEvent as { amount: string }).amount, e.triggerEvent as Record<string, unknown>]));
+    expect(byTo[`${BOB}:5000000`]).toMatchObject({ counterparty_trust_score: 190, counterparty_trust_status: "scored" });
+    expect(byTo[`${CAROL}:5000000`]).toMatchObject({ counterparty_trust_score: null, counterparty_trust_status: "pending" });
+    // The 0.000001 transfer fails the amount condition: no lookup at all.
+    expect(byTo[`${ALICE}:1`]).toMatchObject({ counterparty_trust_status: "skipped", counterparty_trust_score: null });
+    expect(asked.sort()).toEqual([ALICE, BOB, CAROL].sort());
   });
 });

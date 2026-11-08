@@ -163,13 +163,21 @@ export function checkTemplate(t: Pick<FlowTemplate, "placeholders" | "definition
       issues.push(`placeholder "${p.key}" is a private destination and cannot have a default`);
     }
   }
+  // Whoever used it would move funds from their own Safe to calls someone else wrote.
+  const def = t.definition as { actions?: unknown; settings?: unknown } | null;
+  const actions = Array.isArray(def?.actions) ? (def.actions as Array<{ type?: unknown }>) : [];
+  if (actions.some((a) => a?.type === "ONCHAIN_TX") || (def?.settings as { onchain?: unknown } | undefined)?.onchain === true) {
+    issues.push("flows with onchain transactions cannot be shared as templates");
+  }
   return issues;
 }
 
 // ---- sharing a flow as a template -------------------------------------------------------
 
 const CONNECTION_OF: Readonly<Record<string, ConnectionType>> = { TELEGRAM: "telegram", WEBHOOK: "webhook", EMAIL: "email", GOOGLE_SHEETS: "google", HTTP_REQUEST: "http", DISCORD: "discord" };
-const CONNECTION_LABEL: Readonly<Record<ConnectionType, string>> = { telegram: "Telegram chat", webhook: "Webhook connection", email: "Email address", google: "Google account", http: "HTTP secret headers", discord: "Discord" };
+const CONNECTION_LABEL: Readonly<Record<ConnectionType, string>> = { telegram: "Telegram chat", webhook: "Webhook connection", email: "Email address", google: "Google account", http: "HTTP secret headers", discord: "Discord", vigil: "VIGIL connection", mandate: "MANDATE policy" };
+/** Triggers fed by an integration: their connection_id is private, like an action's. */
+const TRIGGER_CONNECTION: Readonly<Record<string, ConnectionType>> = { VIGIL_ALERT: "vigil" };
 const ADDRESS_LABEL: Readonly<Record<string, string>> = { token: "Token", address: "Contract", wallet: "Wallet", deployer: "Deployer", asset: "Token" };
 /** How a numeric condition reads as a form field: `amount_decimal >= 5000` → "Minimum amount (token units)", key `amount_decimal_min`. */
 const CONDITION_WORDS: Readonly<Record<string, { label: string; suffix: string }>> = {
@@ -223,6 +231,10 @@ export function deriveTemplate(def: DefinitionLike): { placeholders: TemplatePla
   };
 
   const trigger = { type: def.trigger.type, params: { ...def.trigger.params } };
+  const triggerConnection = TRIGGER_CONNECTION[def.trigger.type];
+  if (triggerConnection && typeof trigger.params.connection_id === "string") {
+    trigger.params.connection_id = add({ base: `${triggerConnection}_connection`, label: CONNECTION_LABEL[triggerConnection], type: "connection", connectionType: triggerConnection });
+  }
   for (const [k, v] of Object.entries(trigger.params)) {
     if (typeof v === "string" && HEX40.test(v)) trigger.params[k] = add({ base: k, label: ADDRESS_LABEL[k] ?? k, type: "address", default: v, example: v });
     else if (k === "cron" && typeof v === "string") trigger.params[k] = add({ base: "schedule", label: "Schedule (cron)", type: "cron", default: v });
@@ -280,6 +292,8 @@ const TYPE_LABEL: Readonly<Record<string, string>> = {
   STATE_CHANGE: "Contract state changes",
   SCHEDULE: "Schedule",
   INBOUND_WEBHOOK: "Inbound webhook",
+  NEW_LAUNCH: "New token launch",
+  VIGIL_ALERT: "VIGIL alert",
   WEBHOOK: "Webhook",
   TELEGRAM: "Telegram",
   WEB_PUSH: "Web Push",

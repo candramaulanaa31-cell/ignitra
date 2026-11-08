@@ -9,7 +9,8 @@ import { CONNECTION_LABELS } from "@/lib/forms";
 import { useSession } from "@/components/session";
 import type { Connection } from "@/lib/types";
 
-type Kind = "telegram" | "webhook" | "email" | "http" | "google";
+type Kind = "telegram" | "webhook" | "email" | "http" | "google" | "vigil" | "mandate";
+const KINDS: readonly Kind[] = ["telegram", "webhook", "email", "google", "http", "vigil", "mandate"];
 
 function describe(c: Connection): string {
   const m = c.metadata;
@@ -24,6 +25,10 @@ function describe(c: Connection): string {
       return String(m.email ?? "Google account");
     case "http":
       return `${String(m.host ?? "")} · ${(m.header_names as string[] | undefined)?.join(", ") ?? ""}`;
+    case "vigil":
+      return [m.mode === "auto" ? `${String(m.vigil_host ?? "VIGIL")} · registered by IGNITRA` : "receiver registered by you", m.verified === false ? "waiting for VIGIL's secret" : null].filter(Boolean).join(" · ");
+    case "mandate":
+      return `${String(m.host ?? "")} · asked before every onchain action`;
     default:
       return "";
   }
@@ -66,6 +71,41 @@ function VerifyEmail({ conn, onDone }: { conn: Connection; onDone: () => void })
   );
 }
 
+/** A VIGIL connection made without an API key: register the receiver URL in VIGIL, then paste its secret. */
+function VigilSecret({ conn, onDone }: { conn: Connection; onDone: () => void }) {
+  const [secret, setSecret] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const url = String(conn.metadata.receiver_url ?? "");
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    try {
+      await api(`/v1/connections/${conn.id}/verify`, { body: { webhook_secret: secret.trim() } });
+      setSecret("");
+      onDone();
+    } catch (err) {
+      setError(errorText(err));
+    }
+  };
+  return (
+    <form onSubmit={(e) => void submit(e)} className="stack" style={{ gap: 6, marginTop: 6, maxWidth: 560 }}>
+      <span className="small muted">1. In VIGIL, add a webhook with this URL:</span>
+      <div className="row">
+        <code className="grow ellipsis small">{url}</code>
+        <CopyButton value={url} />
+      </div>
+      <span className="small muted">2. Paste the signing secret VIGIL shows you (once). Alerts are refused until then.</span>
+      <div className="row">
+        <input className="mono grow" autoComplete="off" placeholder="VIGIL signing secret" value={secret} onChange={(e) => setSecret(e.target.value)} />
+        <button type="submit" className="btn sm primary" disabled={secret.trim().length < 16}>
+          Save
+        </button>
+      </div>
+      {error ? <span className="small failc">{error}</span> : null}
+    </form>
+  );
+}
+
 function AddConnection({ onAdded }: { onAdded: (secret: string | null) => void }) {
   const [kind, setKind] = useState<Kind>("telegram");
   const [form, setForm] = useState<Record<string, string>>({});
@@ -87,11 +127,13 @@ function AddConnection({ onAdded }: { onAdded: (secret: string | null) => void }
       const body =
         kind === "telegram"
           ? { type: "telegram", bot_token: form.bot_token ?? "", chat_id: form.chat_id ?? "", ...(form.thread_id ? { thread_id: Number(form.thread_id) } : {}), ...label }
-          : kind === "webhook"
-            ? { type: "webhook", url: form.url ?? "", ...label }
+          : kind === "webhook" || kind === "mandate"
+            ? { type: kind, url: form.url ?? "", ...label }
             : kind === "email"
               ? { type: "email", address: form.address ?? "", ...label }
-              : { type: "http", host: form.host ?? "", headers: [{ name: form.header_name ?? "Authorization", value: form.header_value ?? "" }], ...label };
+              : kind === "vigil"
+                ? { type: "vigil", ...(form.api_key?.trim() ? { api_key: form.api_key.trim() } : {}), ...(form.api_url?.trim() ? { api_url: form.api_url.trim() } : {}), ...label }
+                : { type: "http", host: form.host ?? "", headers: [{ name: form.header_name ?? "Authorization", value: form.header_value ?? "" }], ...label };
       const res = await api<{ data: Connection; signing_secret?: string }>("/v1/connections", { body });
       setForm({});
       onAdded(res.signing_secret ?? null);
@@ -107,7 +149,7 @@ function AddConnection({ onAdded }: { onAdded: (secret: string | null) => void }
       <div className="card-head">
         <span className="label">Add a connection</span>
         <select value={kind} onChange={(e) => setKind(e.target.value as Kind)} style={{ width: "auto" }}>
-          {(["telegram", "webhook", "email", "google", "http"] as const).map((k) => (
+          {KINDS.map((k) => (
             <option key={k} value={k}>
               {CONNECTION_LABELS[k]}
             </option>
@@ -160,6 +202,31 @@ function AddConnection({ onAdded }: { onAdded: (secret: string | null) => void }
             </div>
           </>
         ) : null}
+        {kind === "vigil" ? (
+          <>
+            <p className="small muted">
+              Run flows on VIGIL alerts. With a VIGIL API key, IGNITRA registers its receiver in your VIGIL account: the key is used once and never stored. Without a key, you get a receiver URL to register in VIGIL yourself, then paste the secret VIGIL shows.
+            </p>
+            <div className="grid2">
+              <Field name="VIGIL API key (optional)" help="vgl_… from VIGIL → Settings → API keys">
+                <input className="mono" autoComplete="off" value={form.api_key ?? ""} onChange={set("api_key")} />
+              </Field>
+              <Field name="VIGIL API URL (optional)" help="Empty: this server's VIGIL. Else e.g. https://vigil.example/api/v1">
+                <input className="mono" value={form.api_url ?? ""} onChange={set("api_url")} />
+              </Field>
+            </div>
+          </>
+        ) : null}
+        {kind === "mandate" ? (
+          <>
+            <p className="small muted">
+              A policy service IGNITRA asks before every onchain transaction of the grants that name it. It must answer <span className="mono">{"{\"decision\":\"allow\"}"}</span> for the transaction to be sent: a deny, an error or no answer stops it (fail-closed).
+            </p>
+            <Field name="Policy endpoint" help="You get a signing secret once: verify IGNITRA's requests with it.">
+              <input className="mono" placeholder="https://mandate.example/policy" value={form.url ?? ""} onChange={set("url")} />
+            </Field>
+          </>
+        ) : null}
         {kind !== "google" ? (
           <Field name="Label (optional)">
             <input value={form.label ?? ""} onChange={set("label")} />
@@ -168,7 +235,7 @@ function AddConnection({ onAdded }: { onAdded: (secret: string | null) => void }
         {error ? <Notice kind="error">{error}</Notice> : null}
         <div>
           <button type="submit" className="btn primary" disabled={busy}>
-            {busy ? "Checking…" : kind === "google" ? "Connect Google" : "Add"}
+            {busy ? "Checking…" : kind === "google" ? "Connect Google" : kind === "vigil" ? "Connect VIGIL" : "Add"}
           </button>
         </div>
       </div>
@@ -237,7 +304,7 @@ export default function ConnectionsPage() {
             <Spinner />
           </div>
         ) : (list.data?.data.length ?? 0) === 0 ? (
-          <Empty>No connections yet. Add a Telegram chat, a webhook, an email address, a Google account or HTTP secret headers.</Empty>
+          <Empty>No connections yet. Add a Telegram chat, a webhook, an email address, a Google account, HTTP secret headers, VIGIL or a MANDATE policy.</Empty>
         ) : (
           <table className="table responsive">
             <thead>
@@ -256,6 +323,7 @@ export default function ConnectionsPage() {
                     {c.label}
                     <div className="mono small faint">{c.id}</div>
                     {c.type === "email" && c.metadata.verified === false ? <VerifyEmail conn={c} onDone={() => void list.reload()} /> : null}
+                    {c.type === "vigil" && c.metadata.verified === false ? <VigilSecret conn={c} onDone={() => void list.reload()} /> : null}
                   </td>
                   <td data-label="type">{CONNECTION_LABELS[c.type] ?? c.type}</td>
                   <td data-label="details" className="small">

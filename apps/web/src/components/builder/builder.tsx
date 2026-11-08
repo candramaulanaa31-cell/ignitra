@@ -7,7 +7,7 @@ import { ApiError, api, errorText, useApi } from "@/lib/api";
 import { defaultsFor, fromConditions, issuesUnder, newStepId, toConditions, toDefinition, variableGroups, type Draft, type DraftAction } from "@/lib/builder";
 import { ACTION_FORMS, TRIGGER_FORMS, type FormField } from "@/lib/forms";
 import { FINAL, label } from "@/lib/format";
-import type { ActionCatalogItem, AddressInfo, CatalogFields, Connection, FlowDetail, Issue, RunDetail, Sample, TriggerCatalogItem } from "@/lib/types";
+import type { ActionCatalogItem, AddressInfo, CatalogFields, Connection, FlowDetail, Grant, Issue, RunDetail, Sample, TriggerCatalogItem } from "@/lib/types";
 import { RunTrace } from "../run-trace";
 import { useSession } from "../session";
 import { CopyButton, Json, Notice, Spinner, useToast } from "../ui";
@@ -28,7 +28,7 @@ function emptyDraft(): Draft {
     trigger: { type: "TOKEN_TRANSFER", params: defaultsFor(TRIGGER_FORMS.TOKEN_TRANSFER ?? []) },
     conditions: { mode: "all", rows: [] },
     actions: [],
-    settings: { mode: "confirmed", max_runs_per_hour: 60 },
+    settings: { mode: "confirmed", max_runs_per_hour: 60, onchain: false },
   };
 }
 
@@ -39,7 +39,7 @@ function fromFlow(flow: FlowDetail): Draft {
     trigger: { type: d.trigger.type, params: { ...d.trigger.params } },
     conditions: fromConditions(d.conditions),
     actions: d.actions.map((a) => ({ step_id: a.step_id, type: a.type, params: structuredClone(a.params) })),
-    settings: { ...d.settings },
+    settings: { mode: d.settings.mode, max_runs_per_hour: d.settings.max_runs_per_hour, onchain: d.settings.onchain === true },
   };
 }
 
@@ -142,6 +142,7 @@ export function Builder({ initial }: { initial?: FlowDetail }) {
   const triggers = useApi<{ data: TriggerCatalogItem[] }>("/v1/triggers");
   const actions = useApi<{ data: ActionCatalogItem[] }>("/v1/actions");
   const connections = useApi<{ data: Connection[] }>("/v1/connections");
+  const grants = useApi<{ data: Grant[] }>("/v1/onchain/grants");
 
   const [flowId, setFlowId] = useState<string | null>(initial?.id ?? null);
   const [status, setStatus] = useState(initial?.status ?? "paused");
@@ -256,6 +257,7 @@ export function Builder({ initial }: { initial?: FlowDetail }) {
   const ctxBase = (stepIndex: number) => ({
     groups: variableGroups(fields, draft.actions, stepIndex, sample?.payload ?? null),
     connections: connections.data?.data ?? [],
+    grants: grants.data?.data ?? [],
     errors: new Map<string, string[]>(),
   });
 
@@ -414,6 +416,9 @@ export function Builder({ initial }: { initial?: FlowDetail }) {
               </div>
               <div className="card-body stack">
                 {item ? <p className="small muted">{item.description}</p> : null}
+                {a.type === "ONCHAIN_TX" && !draft.settings.onchain ? (
+                  <Notice kind="warn">Off until this flow opts in: turn on “Onchain transactions” in Settings below. It runs on confirmed events only.</Notice>
+                ) : null}
                 {typeErrs.map((m) => (
                   <Notice key={m} kind="error">
                     {m}
@@ -462,6 +467,26 @@ export function Builder({ initial }: { initial?: FlowDetail }) {
             <input type="number" min={1} max={3600} value={draft.settings.max_runs_per_hour} onChange={(e) => update((d) => ({ ...d, settings: { ...d.settings, max_runs_per_hour: Math.max(1, Number(e.target.value) || 1) } }))} />
             <span className="help">Runaway protection: far above this, the flow pauses itself.</span>
           </label>
+          {draft.settings.onchain || draft.actions.some((a) => a.type === "ONCHAIN_TX") ? (
+            <div style={{ gridColumn: "1 / -1" }} className="stack">
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={draft.settings.onchain}
+                  onChange={(e) => update((d) => ({ ...d, settings: { ...d.settings, onchain: e.target.checked, ...(e.target.checked ? { mode: "confirmed" as const } : {}) } }))}
+                />
+                Onchain transactions: let this flow&apos;s ONCHAIN_TX steps send transactions from my Safe
+              </label>
+              <span className="small muted">
+                Only what the chosen grant allows (contracts, functions, per-call and daily limits, expiry), enforced on chain. Every transaction is logged with its hash; TEST runs only simulate. Revoke the grant to stop it at once.
+              </span>
+              {issuesUnder(issues, "settings").get("onchain")?.map((m) => (
+                <span key={m} className="err small">
+                  {m}
+                </span>
+              ))}
+            </div>
+          ) : null}
         </div>
       </section>
 

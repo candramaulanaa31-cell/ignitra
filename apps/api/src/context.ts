@@ -1,10 +1,11 @@
-import type { ActionRegistry, ChainConfig, SafeHttpClient } from "@ignitra/core";
+import type { ActionRegistry, ChainConfig, ChainTxClient, SafeHttpClient } from "@ignitra/core";
 import type { Keyring, Logger } from "@ignitra/core/server";
 import type { AbiRegistry, ChainReader } from "@ignitra/chain";
 import type { EmailConfig, GoogleConfig } from "@ignitra/actions";
 import type { Database } from "@ignitra/db";
-import type { FlowServiceDeps, TokenInfo, TriggerModuleRegistry } from "@ignitra/engine";
+import type { FlowServiceDeps, TokenInfo, TriggerModuleRegistry, TrustLookup } from "@ignitra/engine";
 import type { AuthOptions } from "./auth";
+import type { CallerLimiter } from "./http";
 
 /** Everything route handlers need, resolved once at startup. */
 export interface ApiContext {
@@ -49,4 +50,15 @@ export interface ApiContext {
   readonly vapidPublicKey: string | null;
   readonly onInboundEvent: () => void;
   readonly now: () => number;
+  /** Per-caller token buckets: API keys, signed-in users and anonymous client addresses. */
+  readonly limiter: CallerLimiter;
+  readonly rates: { readonly publicPerMinute: number; readonly sessionPerMinute: number };
+  /** TRUST LAYER scores (null: not configured). */
+  readonly trust: TrustLookup | null;
+  /** Default VIGIL API for VIGIL connections (operator configuration). */
+  readonly vigilApiUrl: string | null;
+  /** Chain reads / receipts for onchain grants (null without an RPC). */
+  readonly chainTx: ChainTxClient | null;
+  /** Every onchain grant must name a MANDATE policy (ONCHAIN_MANDATE_REQUIRED). */
+  readonly mandateRequired: boolean;
 }

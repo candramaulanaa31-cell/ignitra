@@ -100,7 +100,7 @@ async function makeFlow(actions: Array<{ step_id: string; type: ActionType; para
   await h.db.insert(flowVersions).values({
     flowId,
     version: 1,
-    definition: { trigger: { type: "TOKEN_TRANSFER", params: {} }, actions, settings: { mode: "confirmed", max_runs_per_hour: 60 } },
+    definition: { trigger: { type: "TOKEN_TRANSFER", params: {} }, actions, settings: { mode: "confirmed", max_runs_per_hour: 60, onchain: false } },
   });
   return { userId, flowId };
 }

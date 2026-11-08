@@ -1,9 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { Abi } from "viem";
-import { BUILTIN_TEMPLATE_VARIABLES, conditionsSchema, explorerAddressUrl, isValidAddress, normalizeAddress, toChecksumAddress, type FieldSpec } from "@ignitra/core";
+import { BUILTIN_TEMPLATE_VARIABLES, conditionsSchema, explorerAddressUrl, isValidAddress, normalizeAddress, toChecksumAddress, type FieldSpec, evaluateConditions, type FlowDefinition } from "@ignitra/core";
 import { BUILTIN_ABIS, formatEventFragment, formatFunctionFragment } from "@ignitra/chain";
-import { FlowValidationError, TestRunLimitError, getCurrentDefinition, queueTestRun, sampleTrigger, type TriggerRuntime } from "@ignitra/engine";
+import { FlowValidationError, TestRunLimitError, getCurrentDefinition, queueTestRun, sampleTrigger, type TriggerRuntime, enrichWithTrust, type Payload } from "@ignitra/engine";
 import { caller } from "../auth";
 import type { ApiContext } from "../context";
 import { ApiError, RateLimiter, enforceRate, parse } from "../http";
@@ -166,12 +166,16 @@ export function registerBuilderRoutes(app: FastifyInstance, ctx: ApiContext): vo
             : "nothing to sample yet";
       return { data: null, hint };
     }
+    // TRUST LAYER fields the conditions read, so the builder shows real scores (never invented ones).
+    const draft = { trigger: { type: module.type, params }, ...(conditions?.data ? { conditions: conditions.data } : {}), actions: [], settings: { mode: "confirmed", max_runs_per_hour: 60, onchain: false } } as unknown as FlowDefinition;
+    const payload = await enrichWithTrust(draft, sample.payload as Payload, ctx.trust);
+    const evaluated = payload !== sample.payload && conditions?.data ? (evaluateConditions(conditions.data, payload).results as unknown[]) : null;
     return {
       data: {
         kind: sample.kind,
         note: sample.note,
-        payload: sample.payload,
-        conditions: sample.conditions ?? null,
+        payload,
+        conditions: evaluated ?? sample.conditions ?? null,
         scanned_blocks: sample.scannedBlocks ?? null,
       },
     };
@@ -227,6 +231,8 @@ export function registerBuilderRoutes(app: FastifyInstance, ctx: ApiContext): vo
       payload = sample.payload as Record<string, unknown>;
       sampleInfo = { kind: sample.kind, note: sample.note };
     }
+    // Real TRUST LAYER scores for chain samples; a custom sample keeps the ones it brings.
+    if (!body.sample || !Object.keys(body.sample).some((k) => /_trust_/.test(k))) payload = await enrichWithTrust(current.definition, payload as Payload, ctx.trust);
     try {
       const { run, conditionsPassed } = await queueTestRun(ctx.db, { flowId: req.params.id, ownerId: me.userId, payload });
       ctx.onRunQueued();

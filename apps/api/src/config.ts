@@ -1,10 +1,10 @@
 import { z } from "zod";
 import { ROBINHOOD_CHAIN_ID, type ChainConfig } from "@ignitra/core";
 import { apiEnvSchema, encryptionEnvSchema, envVar, keyringFromEnv, parseEnv, type Logger } from "@ignitra/core/server";
-import { AbiRegistry, BlockscoutAbiFetcher, type ChainReader } from "@ignitra/chain";
+import { AbiRegistry, BlockscoutAbiFetcher, createChainWriter, type ChainReader, type RpcChainReader } from "@ignitra/chain";
 import { emailFromEnv, googleFromEnv, runnerEnvShape } from "@ignitra/actions";
 import type { DbHandle } from "@ignitra/db";
-import { DbAbiStore } from "@ignitra/engine";
+import { DbAbiStore, createTrustLayerClient, type TrustLookup } from "@ignitra/engine";
 import { buildServer, type ServerDeps } from "./server";
 
 const list = (fallback: string) =>
@@ -17,6 +17,11 @@ const list = (fallback: string) =>
 
 /** API variables (also merged into the listener's schema for the single-process `api` role). */
 export const apiEnvShape = {
+  /** TRUST LAYER (reputation for Robinhood Chain): counterparty_trust_score conditions. Optional. */
+  TRUST_LAYER_API_URL: envVar.optional(envVar.httpUrl),
+  TRUST_LAYER_API_KEY: envVar.optional(z.string().min(8)),
+  /** Default VIGIL API for VIGIL connections (the site followed by /api/v1). Optional. */
+  VIGIL_API_URL: envVar.optional(envVar.httpUrl),
   API_HOST: envVar.withDefault(z.string().default("127.0.0.1")),
   API_PORT: envVar.withDefault(envVar.int(1, 65_535).default(4000)),
   /** Public base URL of the API, used in inbound webhook URLs. Default http://API_HOST:API_PORT. */
@@ -44,6 +49,8 @@ export const apiEnvShape = {
   INBOUND_RATE_PER_MINUTE: envVar.withDefault(envVar.int(1, 100_000).default(60)),
   /** Requests stored per inbound webhook URL per 24 h (bounds storage; bodies are up to 64 KB). */
   INBOUND_DAILY_LIMIT: envVar.withDefault(envVar.int(1, 10_000_000).default(5000)),
+  PUBLIC_RATE_PER_MINUTE: envVar.withDefault(envVar.int(1, 1_000_000).default(300)),
+  SESSION_RATE_PER_MINUTE: envVar.withDefault(envVar.int(1, 1_000_000).default(600)),
 } as const;
 
 export const apiServiceEnvSchema = apiEnvSchema.extend({
@@ -64,6 +71,7 @@ type ApiEnvSubset = Pick<
   | "WEBHOOK_SIGNING_SECRET"
   | "TELEGRAM_API_URL"
   | "OUTBOUND_ALLOW_PRIVATE"
+  | "ONCHAIN_MANDATE_REQUIRED"
   | "VAPID_PUBLIC_KEY"
   | "EXPLORER_API_URL"
   | "EXPLORER_API_KEY"
@@ -81,6 +89,11 @@ type ApiEnvSubset = Pick<
 >;
 
 /** Builds the API from env: secrets, CORS / SIWE domains, ABI lookups for save-time event/function resolution. */
+/** The TRUST LAYER client, when the operator configured one. */
+export function trustFromEnv(env: { TRUST_LAYER_API_URL?: string | undefined; TRUST_LAYER_API_KEY?: string | undefined }): TrustLookup | null {
+  return env.TRUST_LAYER_API_URL ? createTrustLayerClient({ baseUrl: env.TRUST_LAYER_API_URL, apiKey: env.TRUST_LAYER_API_KEY ?? null }) : null;
+}
+
 export async function createApiFromEnv(
   env: ApiEnvSubset,
   deps: { db: DbHandle; chain: ChainConfig; logger: Logger; version: string; reader: ChainReader | null; onInboundEvent?: () => void; onRunQueued?: () => void },
@@ -122,11 +135,17 @@ export async function createApiFromEnv(
     ...(env.TELEGRAM_API_URL ? { telegramApiBase: env.TELEGRAM_API_URL } : {}),
     inboundRatePerMinute: env.INBOUND_RATE_PER_MINUTE,
     inboundDailyLimit: env.INBOUND_DAILY_LIMIT,
+    publicRatePerMinute: env.PUBLIC_RATE_PER_MINUTE,
+    sessionRatePerMinute: env.SESSION_RATE_PER_MINUTE,
     trustProxy: env.TRUST_PROXY,
     ...(deps.onInboundEvent ? { onInboundEvent: deps.onInboundEvent } : {}),
     ...(deps.onRunQueued ? { onRunQueued: deps.onRunQueued } : {}),
     ...(env.WEB_URL ? { webUrl: env.WEB_URL } : {}),
     demoFlowId: env.DEMO_FLOW_ID ?? null,
+    trust: trustFromEnv(env),
+    vigilApiUrl: env.VIGIL_API_URL ?? null,
+    chainTx: deps.reader && "pool" in deps.reader ? createChainWriter((deps.reader as RpcChainReader).pool) : null,
+    mandateRequired: env.ONCHAIN_MANDATE_REQUIRED,
     email,
     google,
   };

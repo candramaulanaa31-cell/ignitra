@@ -4,6 +4,7 @@ import { StateUnavailableError } from "@ignitra/chain";
 import { logEvidence, logKey } from "../evidence";
 import { addressParam } from "../params";
 import type { LogTriggerModule, TriggerOutcome } from "../types";
+import { TRUST_ROLES, trustFields } from "../enrich/trust";
 import { TRANSFER_TOPIC, amountFields, amountPayload, isZero, parseErc20Transfer, percentOf, tokenFields, tokenPayload, type Erc20Transfer } from "./erc20";
 
 /**
@@ -39,6 +40,8 @@ const FIELDS: readonly FieldSpec[] = [
   ...amountFields("balance_after", "Holder balance after the transaction"),
   { path: "percent_of_supply", type: "number", description: "Amount as % of total supply", nullable: true },
   ...tokenFields(),
+  { path: "counterparty", type: "address", description: "The new holder (for TRUST LAYER scores)" },
+  ...trustFields(TRUST_ROLES.NEW_HOLDER ?? []),
 ];
 
 /** Per-flow running balances; capped so a huge token cannot exhaust memory (re-seeding stays correct). */
@@ -158,6 +161,7 @@ export function createNewHolderTrigger(): LogTriggerModule<NewHolderParams> {
             payload: {
               ...logEvidence(event, rt.chain),
               holder,
+              counterparty: holder,
               from: r.from,
               ...amountPayload("amount", r.received, meta.decimals),
               ...amountPayload("balance_after", after, meta.decimals),

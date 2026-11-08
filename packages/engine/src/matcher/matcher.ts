@@ -1,5 +1,6 @@
 import type { Logger } from "pino";
 import { evaluateConditions, newId, planLimits, usagePeriod, type ChainConfig, type FlowDefinition, type NormalizedHash, type Plan } from "@ignitra/core";
+import { enrichWithTrust, type TrustLookup } from "../enrich/trust";
 import type { ChainReader } from "@ignitra/chain";
 import type { ChainEvent, Database, InboundEvent } from "@ignitra/db";
 import { idempotencyKey } from "../evidence";
@@ -163,6 +164,7 @@ export class Matcher {
   readonly #reader: ChainReader;
   readonly #rt: TriggerRuntime;
   readonly #triggers: TriggerModuleRegistry;
+  readonly #trust: TrustLookup | null;
   readonly #log: Logger;
   readonly #opts: Required<Omit<MatcherOptions, "now">>;
   readonly #now: () => number;
@@ -184,10 +186,13 @@ export class Matcher {
     logger: Logger;
     owner: string;
     options?: MatcherOptions;
+    /** TRUST LAYER scores for flows that read them (null: not configured, fields say "unavailable"). */
+    trust?: TrustLookup | null;
   }) {
     this.#chain = deps.chain;
     this.#reader = deps.reader;
     this.#triggers = deps.triggers;
+    this.#trust = deps.trust ?? null;
     this.#log = deps.logger;
     this.store = new MatcherStore(deps.db, { chainId: deps.chain.id, owner: deps.owner });
     this.#rt = { chain: deps.chain, reader: deps.reader, tokens: deps.tokens, logger: deps.logger };
@@ -286,7 +291,11 @@ export class Matcher {
 
   // ---- admission -------------------------------------------------------------
 
-  async #admit(decisions: readonly Decision[], paused: string[]): Promise<BatchCommit> {
+  async #admit(raw: readonly Decision[], paused: string[]): Promise<BatchCommit> {
+    // TRUST LAYER fields, only for flows that read them (lazy, cached, never throws).
+    const decisions = await Promise.all(
+      raw.map(async (d) => (d.outcome.kind === "match" ? { ...d, outcome: { ...d.outcome, payload: await enrichWithTrust(d.flow.definition, d.outcome.payload, this.#trust) } } : d)),
+    );
     const runs: RunInsert[] = [];
     const evaluations: EvaluationInsert[] = [];
     const stats = new Map<string, StatsDelta>();

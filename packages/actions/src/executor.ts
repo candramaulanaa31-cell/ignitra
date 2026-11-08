@@ -151,7 +151,7 @@ export class RunExecutor {
         });
 
       const started = performance.now();
-      const result = await this.#runStep(run, flow, step, attempt, outputs);
+      const result = await this.#runStep(run, flow, step, attempt, outputs, (definition as FlowDefinition).settings);
       const durationMs = Math.round(performance.now() - started);
       const base = {
         httpStatus: "httpStatus" in result && result.httpStatus !== undefined ? result.httpStatus : null,
@@ -198,6 +198,7 @@ export class RunExecutor {
     step: FlowDefinition["actions"][number],
     attempt: number,
     outputs: Record<string, unknown>,
+    settings: FlowDefinition["settings"],
   ): Promise<ActionResult> {
     const { actions, keyring, db, http, push, webhookMaster, logger, chain } = this.#d;
     const module = actions.has(step.type) ? actions.get(step.type) : undefined;
@@ -247,6 +248,8 @@ export class RunExecutor {
       push: push ? { send: (message) => push.sendToUser(flow.ownerId, message) } : null,
       ownerSigningSecret: webhookMaster ? deriveOwnerSigningSecret(webhookMaster, flow.ownerId) : null,
       chain: chain ?? null,
+      ownerId: flow.ownerId,
+      flowSettings: { mode: settings.mode, onchain: settings.onchain === true },
     };
     try {
       return await module.execute(parsed.data, ctx);

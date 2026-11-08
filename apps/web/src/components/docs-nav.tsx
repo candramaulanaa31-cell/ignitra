@@ -10,7 +10,10 @@ const PAGES = [
   ["/docs/actions", "Actions"],
   ["/docs/variables", "Variables"],
   ["/docs/webhooks", "Webhooks"],
+  ["/docs/integrations", "Integrations"],
+  ["/docs/onchain", "Onchain"],
   ["/docs/api", "API"],
+  ["/docs/sdk", "SDK"],
 ] as const;
 
 export function DocsNav() {

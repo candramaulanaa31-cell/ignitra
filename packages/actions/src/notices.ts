@@ -5,6 +5,7 @@ import type { Keyring } from "@ignitra/core/server";
 import { flowVersions, flows, ownerNotifications, runSteps, runs, type Database } from "@ignitra/db";
 import { deliverWebhook, resolveWebhookTarget, webhookParams } from "./actions/webhook";
 import { loadConnection } from "./connections";
+import { expireGrants } from "./onchain/grants";
 import type { WebPushSender } from "./push";
 import { deriveOwnerSigningSecret } from "./signing";
 
@@ -30,6 +31,11 @@ export class Notifier {
     this.#push = deps.push;
     this.#webhookMaster = deps.webhookMaster;
     this.#log = deps.logger;
+  }
+
+  /** Grants past their expiry: status expired, session key wiped. */
+  async expireOnchainGrants(): Promise<number> {
+    return expireGrants(this.#db, new Date());
   }
 
   async revertNotices(limit = 20): Promise<number> {

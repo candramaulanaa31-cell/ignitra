@@ -4,7 +4,7 @@ import { z } from "zod";
 import { isValidTimeZone, nextPeriodStart, planLimits, usagePeriod, type Plan } from "@ignitra/core";
 import { flows, ownerNotifications, pushSubscriptions, usageMonthly, users } from "@ignitra/db";
 import { PushSubscriptionError, addPushSubscription, deriveOwnerSigningSecret } from "@ignitra/actions";
-import { SESSION_COOKIE, caller, revokeSession } from "../auth";
+import { SESSION_COOKIE, caller, requireSession, revokeSession } from "../auth";
 import type { ApiContext } from "../context";
 import { ApiError, clampLimit, iso, parse, setCookie } from "../http";
 import { notificationView, userView } from "../views";
@@ -42,7 +42,7 @@ const subscriptionBody = z.object({
 /** Authenticated: profile, usage, sign-out, notifications, Web Push subscriptions. */
 export function registerAccountRoutes(app: FastifyInstance, ctx: ApiContext): void {
   app.post("/v1/auth/logout", async (req, reply) => {
-    await revokeSession(ctx.db, caller(req).sessionId);
+    await revokeSession(ctx.db, requireSession(req).sessionId);
     setCookie(reply, SESSION_COOKIE, "", { maxAgeSeconds: 0, secure: ctx.auth.secureCookies });
     return reply.code(204).send();
   });

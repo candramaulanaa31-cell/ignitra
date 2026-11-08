@@ -123,6 +123,8 @@ export const flowSettingsSchema = z
   .object({
     mode: z.enum(FLOW_MODES).default("confirmed"),
     max_runs_per_hour: z.number().int().min(1).max(LIMITS.maxRunsPerHour).default(60),
+    /** Explicit, per-flow opt-in for ONCHAIN_TX steps (spec: default OFF). */
+    onchain: z.boolean().default(false),
   })
   .strict();
 
@@ -131,7 +133,7 @@ export const flowDefinitionSchema = z
     trigger: triggerSpecSchema,
     conditions: conditionsSchema.optional(),
     actions: z.array(actionStepSchema).min(1).max(LIMITS.maxActions),
-    settings: flowSettingsSchema.default({ mode: "confirmed", max_runs_per_hour: 60 }),
+    settings: flowSettingsSchema.default({ mode: "confirmed", max_runs_per_hour: 60, onchain: false }),
   })
   .strict()
   .superRefine((def, ctx) => {

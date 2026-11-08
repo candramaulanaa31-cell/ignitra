@@ -4,7 +4,7 @@ import { isId, newId, planLimits, usagePeriod } from "@ignitra/core";
 import { flowVersions, flows, inboundEvents, usageMonthly, users } from "@ignitra/db";
 import { inboundHookSalt, verifyInboundToken } from "@ignitra/engine";
 import type { ApiContext } from "../context";
-import { ApiError, RateLimiter, enforceRate, notFound } from "../http";
+import { ApiError, RECEIVER_MISSES_PER_MINUTE, RateLimiter, enforceRate, notFound } from "../http";
 
 /**
  * Public INBOUND_WEBHOOK endpoint: POST /v1/hooks/<flow_id>/<token>
@@ -66,9 +66,16 @@ export function registerHookRoutes(app: FastifyInstance, ctx: ApiContext): void 
     scope.post<{ Params: { flowId: string; token: string } }>("/v1/hooks/:flowId/:token", { bodyLimit: INBOUND_MAX_BYTES }, async (req, reply) => {
       const { flowId, token } = req.params;
       if (!ctx.webhookMaster) throw new ApiError(503, "not_configured", "inbound webhooks are not configured on this server");
-      if (!isId("flow", flowId) || token.length > 128) throw notFound("hook");
+      // Wrong URLs cost the sender's address: guessing is bounded, real senders are not.
+      const misses = `inbound-miss:${req.ip}`;
+      ctx.limiter.ensure(misses, RECEIVER_MISSES_PER_MINUTE, reply);
+      const miss = () => {
+        ctx.limiter.spend(misses, RECEIVER_MISSES_PER_MINUTE);
+        return notFound("hook");
+      };
+      if (!isId("flow", flowId) || token.length > 128) throw miss();
       const salt = await inboundHookSalt(ctx.db, flowId);
-      if (!salt || !verifyInboundToken(ctx.webhookMaster, flowId, salt, token)) throw notFound("hook");
+      if (!salt || !verifyInboundToken(ctx.webhookMaster, flowId, salt, token)) throw miss();
       enforceRate(limiter, flowId, reply, "requests for this hook");
 
       const [flow] = await ctx.db

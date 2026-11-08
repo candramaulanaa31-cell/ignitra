@@ -142,6 +142,31 @@ describe("deriveTemplate (share a flow)", () => {
     ]);
     expect(outlineDefinition(t.definition, t.placeholders)[1]).toEqual({ kind: "IF", text: "amount_decimal ≥ ‹Minimum amount (token units)›" });
   });
+
+  it("keeps an integration trigger's connection private", () => {
+    const t = deriveTemplate({
+      trigger: { type: "VIGIL_ALERT", params: { connection_id: "conn_01m6ttw446jwqv7wj4fn65rxkz", stage: "confirmed", min_severity: "high" } },
+      actions: [{ step_id: "notify", type: "TELEGRAM", params: { connection_id: "conn_01m6ttw478ynwbtzyxxgwn6yqx", text: "{{trigger.title}}" } }],
+    });
+    expect(JSON.stringify(t)).not.toContain("conn_01m6");
+    expect(t.placeholders.map((p) => [p.key, p.type, p.connectionType ?? null, p.default ?? null])).toEqual([
+      ["vigil_connection", "connection", "vigil", null],
+      ["telegram_chat", "connection", "telegram", null],
+    ]);
+    expect(t.definition.trigger.params).toMatchObject({ connection_id: { $param: "vigil_connection" }, stage: "confirmed", min_severity: "high" });
+    expect(checkTemplate(t)).toEqual([]);
+  });
+
+  it("refuses flows with onchain transactions: users would move funds through calls someone else wrote", () => {
+    const onchain = deriveTemplate({
+      ...flow,
+      actions: [{ step_id: "pay", type: "ONCHAIN_TX", params: { grant_id: `grt_${"a".repeat(26)}`, to: "0x5fc5360d0400a0fd4f2af552add042d716f1d168", function: "transfer(address,uint256)", args: ["0x2222222222222222222222222222222222222222", "1000"] } }],
+      settings: { mode: "confirmed", onchain: true },
+    });
+    expect(checkTemplate(onchain)).toContain("flows with onchain transactions cannot be shared as templates");
+    // The opt-in alone is refused too, whatever the steps are.
+    expect(checkTemplate({ placeholders: [], definition: { ...flow, settings: { onchain: true } } })).toContain("flows with onchain transactions cannot be shared as templates");
+  });
 });
 
 describe("outlineDefinition", () => {

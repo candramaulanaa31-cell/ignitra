@@ -683,6 +683,125 @@ export const templateStats = pgTable("template_stats", {
   lastUsedAt: ts("last_used_at"),
 });
 
+// ---------------------------------------------------------------------------
+// api_keys — long-lived credentials for the public API and the SDK (Phase 8).
+// The secret (`igk_…`) is shown once; only its SHA-256 and a display prefix are kept.
+// ---------------------------------------------------------------------------
+export const apiKeys = pgTable(
+  "api_keys",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    /** The first characters of the key, for recognising it in lists (e.g. `igk_Ab12Cd34`). */
+    prefix: text("prefix").notNull(),
+    tokenHash: text("token_hash").notNull(),
+    ratePerMinute: integer("rate_per_minute").notNull().default(600),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    lastUsedAt: ts("last_used_at"),
+    revokedAt: ts("revoked_at"),
+  },
+  (t) => [
+    uniqueIndex("api_keys_token_hash_key").on(t.tokenHash),
+    index("api_keys_user_idx").on(t.userId),
+    check("api_keys_token_hash_format", sql`token_hash ~ '^[0-9a-f]{64}$'`),
+    check("api_keys_name_length", sql`char_length(name) between 1 and 80`),
+    check("api_keys_rate", sql`rate_per_minute between 1 and 100000`),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// onchain_grants — scoped, revocable permissions a user's Safe gives an IGNITRA session key
+// (Zodiac Roles v2). The session key's private key is encrypted and wiped on revoke / expiry;
+// the user's own keys are never involved.
+// ---------------------------------------------------------------------------
+export const ONCHAIN_GRANT_STATUSES = ["pending", "active", "revoked", "expired"] as const;
+export const onchainGrants = pgTable(
+  "onchain_grants",
+  {
+    id: text("id").primaryKey(),
+    ownerId: text("owner_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    chainId: integer("chain_id").notNull(),
+    label: text("label").notNull(),
+    safeAddress: text("safe_address").notNull(),
+    rolesAddress: text("roles_address").notNull(),
+    roleKey: text("role_key").notNull(),
+    sessionKeyAddress: text("session_key_address").notNull(),
+    /** Encrypted session private key; null once revoked or expired (the key no longer exists). */
+    sessionKeyEnc: jsonb("session_key_enc").$type<Record<string, unknown>>(),
+    /** Targets, functions, value / amount limits and expiry, as granted. */
+    scope: jsonb("scope").$type<Record<string, unknown>>().notNull(),
+    /**
+     * The MANDATE policy every action of the grant must pass. Never silently dropped: deleting a
+     * connection a grant still names fails ("no action", checked at the end of the statement, so
+     * deleting the whole account still cascades). Terminal grants release it first.
+     */
+    mandateConnectionId: text("mandate_connection_id").references(() => connections.id, { onDelete: "no action" }),
+    status: text("status", { enum: ONCHAIN_GRANT_STATUSES }).notNull().default("pending"),
+    grantTxHash: text("grant_tx_hash"),
+    expiresAt: ts("expires_at").notNull(),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    activatedAt: ts("activated_at"),
+    revokedAt: ts("revoked_at"),
+  },
+  (t) => [
+    index("onchain_grants_owner_idx").on(t.ownerId),
+    uniqueIndex("onchain_grants_role_key").on(t.rolesAddress, t.roleKey),
+    check("onchain_grants_status", sql`status in ('pending', 'active', 'revoked', 'expired')`),
+    check("onchain_grants_addresses", sql`safe_address ~ '^0x[0-9a-f]{40}$' and roles_address ~ '^0x[0-9a-f]{40}$' and session_key_address ~ '^0x[0-9a-f]{40}$'`),
+    check("onchain_grants_key_wiped", sql`status in ('pending', 'active') or session_key_enc is null`),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// onchain_actions — every ONCHAIN_TX attempt, recorded before it is sent (exactly-once intent):
+// unique on the step's idempotency key; the signed transaction is stored before broadcast so a
+// retry re-sends that same transaction instead of signing a second one.
+// ---------------------------------------------------------------------------
+export const ONCHAIN_ACTION_STATUSES = ["simulated", "denied", "signed", "sent", "confirmed", "reverted", "failed"] as const;
+export const onchainActions = pgTable(
+  "onchain_actions",
+  {
+    id: text("id").primaryKey(),
+    grantId: text("grant_id")
+      .notNull()
+      .references(() => onchainGrants.id, { onDelete: "cascade" }),
+    ownerId: text("owner_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    flowId: text("flow_id"),
+    runId: text("run_id"),
+    stepId: text("step_id"),
+    idempotencyKey: text("idempotency_key").notNull(),
+    isTest: boolean("is_test").notNull().default(false),
+    toAddress: text("to_address").notNull(),
+    functionSignature: text("function_signature").notNull(),
+    args: jsonb("args").$type<unknown[]>().notNull().default([]),
+    valueWei: text("value_wei").notNull().default("0"),
+    status: text("status", { enum: ONCHAIN_ACTION_STATUSES }).notNull(),
+    mandate: jsonb("mandate").$type<Record<string, unknown>>(),
+    nonce: integer("nonce"),
+    rawTx: text("raw_tx"),
+    txHash: text("tx_hash"),
+    blockNumber: bigint("block_number", { mode: "number" }),
+    gasUsed: text("gas_used"),
+    error: text("error"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("onchain_actions_idempotency_key").on(t.idempotencyKey),
+    index("onchain_actions_grant_idx").on(t.grantId, t.createdAt.desc()),
+    index("onchain_actions_owner_idx").on(t.ownerId, t.createdAt.desc()),
+    check("onchain_actions_status", sql`status in ('simulated', 'denied', 'signed', 'sent', 'confirmed', 'reverted', 'failed')`),
+    check("onchain_actions_value", sql`value_wei ~ '^[0-9]{1,78}$'`),
+  ],
+);
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type Flow = typeof flows.$inferSelect;
@@ -710,4 +829,7 @@ export type Session = typeof sessions.$inferSelect;
 export type UsageMonthly = typeof usageMonthly.$inferSelect;
 export type InboundEvent = typeof inboundEvents.$inferSelect;
 export type TemplateRow = typeof templates.$inferSelect;
+export type ApiKeyRow = typeof apiKeys.$inferSelect;
+export type OnchainGrantRow = typeof onchainGrants.$inferSelect;
+export type OnchainActionRow = typeof onchainActions.$inferSelect;
 export type NewInboundEvent = typeof inboundEvents.$inferInsert;

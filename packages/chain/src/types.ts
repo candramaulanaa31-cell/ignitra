@@ -102,6 +102,14 @@ export class LogRangeTooLargeError extends RpcQueryError {
 }
 
 /** eth_call reverted — deterministic, the same on every node. */
+/** The node refused a signed transaction (nonce too low, insufficient funds for gas, …). */
+export class TransactionRejectedError extends RpcQueryError {
+  constructor(message: string) {
+    super(message, false);
+    this.name = "TransactionRejectedError";
+  }
+}
+
 export class CallRevertedError extends RpcQueryError {
   readonly data: `0x${string}` | null;
 

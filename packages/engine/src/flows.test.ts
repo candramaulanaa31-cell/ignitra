@@ -48,7 +48,7 @@ describe("validateFlowDefinition", () => {
   it("normalizes params and applies defaults", async () => {
     const def = await validateFlowDefinition({ ...bigBuys, trigger: { type: "TOKEN_TRANSFER", params: { token: TOKEN.toUpperCase().replace("0X", "0x") } } }, deps);
     expect(def.trigger.params).toEqual({ token: TOKEN, direction: "any" });
-    expect(def.settings).toEqual({ mode: "confirmed", max_runs_per_hour: 60 });
+    expect(def.settings).toEqual({ mode: "confirmed", max_runs_per_hour: 60, onchain: false });
   });
 
   it("rejects unknown condition fields with a suggestion — the classic silent misconfiguration", async () => {
@@ -68,8 +68,10 @@ describe("validateFlowDefinition", () => {
     expect(issues).toEqual([expect.stringMatching(/^settings\.mode: NEW_HOLDER needs confirmed data/)]);
   });
 
-  it("rejects triggers that are not implemented yet", async () => {
-    expect(await issuesOf({ ...bigBuys, trigger: { type: "VIGIL_ALERT", params: {} }, conditions: undefined })).toEqual(["trigger.type: VIGIL_ALERT is not available yet"]);
+  it("needs an integration trigger's connection (VIGIL_ALERT without one is refused)", async () => {
+    const issues = await issuesOf({ ...bigBuys, trigger: { type: "VIGIL_ALERT", params: {} }, conditions: undefined });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatch(/^trigger\.params\.connection_id: /);
   });
 
   it("surfaces prepare() failures (unresolvable event names)", async () => {

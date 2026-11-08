@@ -8,9 +8,8 @@ import type { FlowTemplate } from "./flow-templates";
  * Adapted from the spec's list: Discord → Telegram (the MVP chat action);
  * "Contract upgraded (VIGIL)" uses the EIP-1967 Upgraded event until the VIGIL
  * integration (Phase 8); "daily holder count" is not readable on-chain without
- * an indexer, so the daily report snapshots supply; Pons launches arrive with
- * the Pons integration (Phase 8) — "new contract from a deployer" covers
- * factories that deploy with CREATE today.
+ * an indexer, so the daily report snapshots supply. Phase 8 adds Pons launches
+ * (NEW_LAUNCH) and VIGIL alerts (VIGIL_ALERT).
  */
 
 const USDG = "0x5fc5360d0400a0fd4f2af552add042d716f1d168";
@@ -314,6 +313,124 @@ export const OFFICIAL_TEMPLATES: readonly FlowTemplate[] = [
       actions: [{ step_id: "hook", type: "WEBHOOK", params: { url: p("url") } }],
     },
     shareText: "⚡ Large transfers of any Robinhood Chain token → your backend. Signed, retried, never twice.",
+  },
+  {
+    slug: "pons-launch-telegram",
+    name: "New launch on Pons → Telegram",
+    summary: "Every token launched on Pons, with its graduation target and links, in your chat.",
+    description:
+      "Fires on each token launched on the Pons launchpad (or only those of one deployer). The message names the token, its launcher, what it takes to graduate, and the links the launcher set. Those links are the launcher's own: treat them as unverified.",
+    category: "trading",
+    tags: ["pons", "launchpad", "telegram"],
+    placeholders: [
+      { key: "deployer", label: "Only this deployer (optional)", type: "address", optional: true, help: "Leave empty for every launch." },
+      { key: "chat", label: "Telegram chat", type: "connection", connectionType: "telegram" },
+    ],
+    definition: {
+      trigger: { type: "NEW_LAUNCH", params: { launchpad: "pons", deployer: p("deployer") } },
+      actions: [
+        {
+          step_id: "post",
+          type: "TELEGRAM",
+          params: {
+            connection_id: p("chat"),
+            text: `🚀 <b>New on Pons: {{trigger.token.name | default: "?"}} ({{trigger.token.symbol | default: "?"}})</b>\nby <code>{{trigger.deployer | short}}</code> · graduates at {{trigger.graduation_threshold_formatted}} {{trigger.pair_symbol | default: ""}}\n{{trigger.socials.website | default: "no website"}} · {{trigger.socials.twitter | default: "no X"}}\n${tx}`,
+          },
+        },
+      ],
+    },
+    shareText: "🚀 Every Pons launch on Robinhood Chain, straight to your Telegram: token, launcher, graduation target, links.",
+  },
+  {
+    slug: "vigil-upgrade-webhook",
+    name: "Contract upgraded (VIGIL) → webhook",
+    summary: "VIGIL confirms a proxy upgrade on a contract you watch; your server hears it, signed.",
+    description:
+      "Fires when VIGIL confirms that a proxy you watch in VIGIL was upgraded (rule PROXY_UPGRADE_V1). Your endpoint receives IGNITRA's signed run.action envelope with VIGIL's evidence: the transaction, who sent it, and the implementation before and after.",
+    category: "security",
+    tags: ["vigil", "upgrades", "webhook"],
+    placeholders: [
+      { key: "vigil", label: "VIGIL connection", type: "connection", connectionType: "vigil" },
+      { key: "url", label: "Your webhook URL", type: "url" },
+    ],
+    definition: {
+      trigger: { type: "VIGIL_ALERT", params: { connection_id: p("vigil"), rules: ["PROXY_UPGRADE_V1"] } },
+      actions: [{ step_id: "hook", type: "WEBHOOK", params: { url: p("url") } }],
+    },
+    shareText: "🛡️ VIGIL sees a proxy upgrade on your contract → your backend gets a signed, deduplicated webhook within seconds.",
+  },
+  {
+    slug: "vigil-critical-telegram",
+    name: "Critical VIGIL alert → Telegram",
+    summary: "Every serious VIGIL alert about your contracts, with its evidence, in your team chat.",
+    description:
+      "Fires on VIGIL alerts at or above the severity you choose, once each alert is confirmed. The message states the change as a fact, the contract, who made it, and links to the transaction.",
+    category: "security",
+    tags: ["vigil", "security", "telegram"],
+    placeholders: [
+      { key: "vigil", label: "VIGIL connection", type: "connection", connectionType: "vigil" },
+      {
+        key: "severity",
+        label: "Minimum severity",
+        type: "select",
+        default: "high",
+        options: [
+          { value: "medium", label: "Medium and above" },
+          { value: "high", label: "High and critical" },
+          { value: "critical", label: "Critical only" },
+        ],
+      },
+      { key: "chat", label: "Telegram chat", type: "connection", connectionType: "telegram" },
+    ],
+    definition: {
+      trigger: { type: "VIGIL_ALERT", params: { connection_id: p("vigil"), min_severity: p("severity") } },
+      actions: [
+        {
+          step_id: "tell",
+          type: "TELEGRAM",
+          params: {
+            connection_id: p("chat"),
+            text: `🚨 <b>{{trigger.severity | upper}}: {{trigger.title}}</b>\n{{trigger.summary}}\n<code>{{trigger.contract | short}}</code> {{trigger.label | default: ""}} · by <code>{{trigger.actor | short}}</code>\n${tx}`,
+          },
+        },
+      ],
+    },
+    shareText: "🚨 Ownership, upgrades, pauses, roles: VIGIL watches your contracts and IGNITRA puts every critical change in your Telegram, with proof.",
+  },
+  {
+    slug: "risky-buyer-telegram",
+    name: "Big buy by a low-trust wallet → Telegram",
+    summary: "Large buys of your token by wallets TRUST LAYER scores as risky.",
+    description:
+      "Fires on transfers of your token of at least the amount when TRUST LAYER scores the recipient below the threshold (0–1000, higher is more trustworthy). Wallets TRUST LAYER has not scored yet do not fire: a score is never guessed.",
+    category: "security",
+    tags: ["trust-layer", "risk", "telegram"],
+    placeholders: [
+      { key: "token", label: "Token", type: "address", example: USDG },
+      { key: "min_amount", label: "Minimum amount (token units)", type: "decimal", default: "10000" },
+      { key: "max_score", label: "Below this Trust Score", type: "number", default: 300, help: "0–1000; below 300 is high risk." },
+      { key: "chat", label: "Telegram chat", type: "connection", connectionType: "telegram" },
+    ],
+    definition: {
+      trigger: { type: "TOKEN_TRANSFER", params: { token: p("token") } },
+      conditions: {
+        all: [
+          { field: "amount_decimal", op: ">=", value: p("min_amount") },
+          { field: "to_trust_score", op: "<", value: p("max_score") },
+        ],
+      },
+      actions: [
+        {
+          step_id: "tell",
+          type: "TELEGRAM",
+          params: {
+            connection_id: p("chat"),
+            text: `⚠️ <b>Low-trust buyer: {{trigger.amount_formatted}} {{trigger.token.symbol | default: "?"}}</b>\n<code>{{trigger.to | short}}</code> · Trust Score {{trigger.to_trust_score}} ({{trigger.to_trust_band | default: "?"}})\n${tx}`,
+          },
+        },
+      ],
+    },
+    shareText: "⚠️ Know when a risky wallet buys your token: TRUST LAYER scores the buyer, IGNITRA tells your chat. No score, no alert: nothing is guessed.",
   },
   {
     slug: "mint-burn-telegram",

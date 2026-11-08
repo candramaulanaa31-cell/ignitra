@@ -16,6 +16,8 @@ export const ID_PREFIXES = {
   session: "ses",
   inboundRequest: "req",
   template: "tpl",
+  grant: "grt",
+  onchainAction: "oca",
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;

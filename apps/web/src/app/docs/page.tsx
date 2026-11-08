@@ -126,7 +126,16 @@ THEN  Telegram → "🔥 {{trigger.amount_formatted}} {{trigger.token.symbol}}" 
           <Link href="/docs/webhooks">Webhooks</Link>: signatures, the envelope, idempotency, and inbound webhooks.
         </li>
         <li>
+          <Link href="/docs/integrations">Integrations</Link>: VIGIL alerts, TRUST LAYER scores, MANDATE policies, Pons launches.
+        </li>
+        <li>
+          <Link href="/docs/onchain">Onchain actions</Link>: transactions from your Safe through a scoped, revocable session key.
+        </li>
+        <li>
           <Link href="/docs/api">API</Link>: sign-in, endpoints, errors.
+        </li>
+        <li>
+          <Link href="/docs/sdk">SDK &amp; API keys</Link>: <code>@ignitra/sdk</code>, keys and rate limits.
         </li>
       </ul>
     </>

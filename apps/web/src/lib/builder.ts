@@ -19,7 +19,8 @@ export interface Draft {
   trigger: { type: string; params: Record<string, unknown> };
   conditions: ConditionsDraft;
   actions: DraftAction[];
-  settings: { mode: "confirmed" | "fast"; max_runs_per_hour: number };
+  /** `onchain`: ONCHAIN_TX steps run only when the flow opts in (off by default). */
+  settings: { mode: "confirmed" | "fast"; max_runs_per_hour: number; onchain: boolean };
 }
 
 export interface ConditionRow {

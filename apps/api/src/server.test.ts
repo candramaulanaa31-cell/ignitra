@@ -93,7 +93,7 @@ describe("GET /v1/triggers", () => {
     const res = await app.inject({ method: "GET", url: "/v1/triggers" });
     expect(res.statusCode).toBe(200);
     const data = res.json().data as Array<{ type: string; kind: string; supports_fast: boolean; params_schema: { properties: Record<string, unknown> }; fields: Array<{ path: string }> }>;
-    expect(data.map((t) => t.type)).toEqual(["TOKEN_TRANSFER", "CONTRACT_EVENT", "NEW_HOLDER", "BALANCE_THRESHOLD", "CONTRACT_DEPLOYED", "STATE_CHANGE", "SCHEDULE", "INBOUND_WEBHOOK"]);
+    expect(data.map((t) => t.type)).toEqual(["TOKEN_TRANSFER", "CONTRACT_EVENT", "NEW_HOLDER", "BALANCE_THRESHOLD", "CONTRACT_DEPLOYED", "STATE_CHANGE", "SCHEDULE", "INBOUND_WEBHOOK", "NEW_LAUNCH", "VIGIL_ALERT"]);
     const transfer = data.find((t) => t.type === "TOKEN_TRANSFER");
     expect(transfer).toMatchObject({ kind: "log", supports_fast: true });
     expect(Object.keys(transfer?.params_schema.properties ?? {})).toEqual(["token", "wallet", "direction"]);
@@ -110,8 +110,9 @@ describe("GET /v1/actions and push key", () => {
   it("lists the MVP actions (Telegram, not Discord) with schemas and output fields", async () => {
     const app = await buildServer({ db, chain, logger, version: "0.1.0", vapidPublicKey: "BPub" });
     const data = (await app.inject({ method: "GET", url: "/v1/actions" })).json().data as Array<{ type: string; connection_type: string | null; params_schema: { properties: Record<string, unknown> }; output_fields: Array<{ path: string }> }>;
-    expect(data.map((a) => a.type)).toEqual(["WEBHOOK", "TELEGRAM", "WEB_PUSH", "CHAIN_READ", "HTTP_REQUEST", "EMAIL", "GOOGLE_SHEETS"]);
+    expect(data.map((a) => a.type)).toEqual(["WEBHOOK", "TELEGRAM", "WEB_PUSH", "CHAIN_READ", "HTTP_REQUEST", "EMAIL", "GOOGLE_SHEETS", "ONCHAIN_TX"]);
     expect(data.filter((a) => (a as { min_plan?: string }).min_plan === "builder").map((a) => a.type)).toEqual(["EMAIL", "GOOGLE_SHEETS"]);
+    expect(data.find((a) => a.type === "ONCHAIN_TX")).toMatchObject({ min_plan: "team" });
     expect(Object.keys(data.find((a) => a.type === "CHAIN_READ")?.params_schema.properties ?? {})).toEqual(["address", "function", "args", "block"]);
     const telegram = data.find((a) => a.type === "TELEGRAM");
     expect(telegram?.connection_type).toBe("telegram");

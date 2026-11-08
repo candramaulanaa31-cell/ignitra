@@ -49,6 +49,29 @@ export function parseFunctionFragment(fragment: string): AbiFunction {
   return item;
 }
 
+const writeFragments = new Map<string, AbiFunction>();
+
+/**
+ * Parses a function signature for a WRITE (ONCHAIN_TX): like parseFunctionFragment, but return
+ * values are optional (`ping()`, `transfer(address to, uint256 amount)`). Inputs must be primitives.
+ */
+export function parseWriteFunction(fragment: string): AbiFunction {
+  const hit = writeFragments.get(fragment);
+  if (hit) return hit;
+  const text = fragment.trim();
+  let item;
+  try {
+    item = parseAbiItem(text.startsWith("function ") ? text : `function ${text}`);
+  } catch (err) {
+    throw new FunctionCallError(`cannot parse function signature: ${(err as Error).message.split("\n")[0]}`);
+  }
+  if (item.type !== "function") throw new FunctionCallError("not a function signature");
+  const complex = item.inputs.find((p) => !isPrimitive(p.type));
+  if (complex) throw new FunctionCallError(`argument type ${complex.type} is not supported (arrays and tuples are not)`);
+  writeFragments.set(fragment, item);
+  return item;
+}
+
 /** Canonical fragment: `function balanceOf(address account) view returns (uint256)`. */
 export function formatFunctionFragment(fn: AbiFunction): string {
   const inputs = fn.inputs.map((p) => formatParam(p, true, false)).join(", ");

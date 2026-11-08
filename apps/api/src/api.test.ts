@@ -1,4 +1,4 @@
-import { createECDH, randomBytes } from "node:crypto";
+import { createECDH, createHmac, randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { eq } from "drizzle-orm";
@@ -282,6 +282,38 @@ describe("connections", () => {
     await app.inject({ method: "DELETE", url: `/v1/flows/${flow.id}`, headers: bearer(me.token) });
     expect((await app.inject({ method: "DELETE", url: `/v1/connections/${conn.id}`, headers: bearer(me.token) })).statusCode).toBe(204);
   });
+
+  it("keeps a VIGIL connection while a flow's trigger listens on it, and checks VIGIL's API URL", async () => {
+    const me = await signIn();
+    for (const api_url of ["javascript:alert(1)", "not a url", "https://user:pass@vigil.example/api/v1"]) {
+      const bad = await app.inject({ method: "POST", url: "/v1/connections", headers: bearer(me.token), payload: { type: "vigil", api_url, api_key: "vgl_test_key_123" } });
+      expect([bad.statusCode, bad.json().error.issues[0].path]).toEqual([400, "api_url"]);
+    }
+    // Without an API key: the connection (and its receiver URL) first, VIGIL's secret second.
+    const vigil = await app.inject({ method: "POST", url: "/v1/connections", headers: bearer(me.token), payload: { type: "vigil" } });
+    expect(vigil.statusCode).toBe(201);
+    const conn = vigil.json().data;
+    expect(conn.metadata).toMatchObject({ mode: "manual", verified: false, receiver_url: vigil.json().receiver_url });
+    const receiver = new URL(vigil.json().receiver_url as string).pathname;
+    const ping = (secret: string) => {
+      const raw = JSON.stringify({ type: "ping", delivery_id: "dlv_1" });
+      const ts = Math.floor(Date.now() / 1000);
+      const signature = `sha256=${createHmac("sha256", secret).update(`${ts}.${raw}`).digest("hex")}`;
+      return app.inject({ method: "POST", url: receiver, headers: { "content-type": "application/json", "x-vigil-signature": signature, "x-vigil-timestamp": String(ts) }, payload: raw });
+    };
+    const early = await ping("manual_secret_0123456789abcdef");
+    expect([early.statusCode, early.json().error.code]).toEqual([401, "not_ready"]);
+    const keyed = await app.inject({ method: "POST", url: `/v1/connections/${conn.id}/verify`, headers: bearer(me.token), payload: { webhook_secret: "manual_secret_0123456789abcdef" } });
+    expect(keyed.json().data.metadata).toMatchObject({ mode: "manual", verified: true });
+    expect((await ping("manual_secret_0123456789abcdef")).json()).toEqual({ ok: true, type: "ping" });
+    expect((await ping("someone_elses_secret_0123456789")).statusCode).toBe(401);
+    const hook = (await app.inject({ method: "POST", url: "/v1/connections", headers: bearer(me.token), payload: { type: "webhook", url: "https://hooks.example.com/v" } })).json().data;
+    const def = { trigger: { type: "VIGIL_ALERT", params: { connection_id: conn.id } }, actions: [{ step_id: "hook", type: "WEBHOOK", params: { connection_id: hook.id } }] };
+    const created = await createFlowVia(me.token, def, false);
+    expect(created.statusCode).toBe(201);
+    const inUse = await app.inject({ method: "DELETE", url: `/v1/connections/${conn.id}`, headers: bearer(me.token) });
+    expect([inUse.statusCode, inUse.json().error.flows]).toEqual([409, [created.json().data.id]]);
+  });
 });
 
 // ---- flows -----------------------------------------------------------------------
@@ -294,7 +326,7 @@ describe("flows", () => {
     const flow = created.json().data;
     expect(flow).toMatchObject({ name: "My flow", status: "active", version: 1, trigger_type: "INBOUND_WEBHOOK", actions: ["WEBHOOK"] });
     expect(flow.hook_url).toMatch(new RegExp(`^http://api\\.test/v1/hooks/${flow.id}/[A-Za-z0-9_-]{43}$`));
-    expect(flow.definition.settings).toEqual({ mode: "confirmed", max_runs_per_hour: 60 });
+    expect(flow.definition.settings).toEqual({ mode: "confirmed", max_runs_per_hour: 60, onchain: false });
 
     const stranger = await signIn();
     expect((await app.inject({ method: "GET", url: `/v1/flows/${flow.id}`, headers: bearer(stranger.token) })).statusCode).toBe(404);
@@ -443,6 +475,20 @@ describe("inbound webhooks", () => {
     for (let i = 0; i < 3; i++) codes.push((await limited.inject({ method: "POST", url, payload: {} })).statusCode);
     expect(codes).toEqual([202, 202, 429]);
     await limited.close();
+  });
+
+  it("bounds guessing per sender address: failed lookups spend a budget, deliveries do not", async () => {
+    const { path } = await activeHook();
+    const sender = { remoteAddress: "198.51.100.23" };
+    for (let i = 0; i < 3; i++) expect((await app.inject({ method: "POST", url: path, payload: { i }, ...sender })).statusCode).toBe(202);
+    const guess = `/v1/hooks/${newId("flow")}/${"A".repeat(43)}`;
+    const misses = new Set<number>();
+    for (let i = 0; i < 120; i++) misses.add((await app.inject({ method: "POST", url: guess, payload: {}, ...sender })).statusCode);
+    expect([...misses]).toEqual([404]);
+    // Spent: this address waits (even for real hooks) until the budget refills; others do not.
+    const blocked = await app.inject({ method: "POST", url: guess, payload: {}, ...sender });
+    expect([blocked.statusCode, typeof blocked.headers["retry-after"]]).toEqual([429, "string"]);
+    expect((await app.inject({ method: "POST", url: path, payload: {}, remoteAddress: "198.51.100.24" })).statusCode).toBe(202);
   });
 
   it("stores nothing that could never run: free-plan quota (402) and a daily intake cap (429)", async () => {

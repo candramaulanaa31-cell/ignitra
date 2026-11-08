@@ -47,11 +47,11 @@ export const fitLabel = (label: string): string => (label.length > 120 ? `${labe
 export async function createConnection(
   db: Database,
   keyring: Keyring,
-  input: { ownerId: string; type: ConnectionType; label: string; secret: Record<string, unknown>; metadata: Record<string, unknown> },
+  input: { ownerId: string; type: ConnectionType; label: string; secret: Record<string, unknown>; metadata: Record<string, unknown>; id?: string },
 ): Promise<PublicConnection> {
   const label = input.label.trim();
   if (label.length < 1 || label.length > 120) throw new ConnectionError("label must be 1-120 characters");
-  const id = newId("connection");
+  const id = input.id ?? newId("connection");
   const [row] = await db
     .insert(connections)
     .values({ id, ownerId: input.ownerId, type: input.type, label, secretEnc: encryptJson(keyring, input.secret, context(id)), metadata: input.metadata })
@@ -202,6 +202,25 @@ export async function verifyEmailConnection(db: Database, keyring: Keyring, inpu
   await updateConnection(db, keyring, input.id, {
     metadata: { address: conn.metadata.address, verified: true, verified_at: new Date(now).toISOString() },
     secret: {},
+  });
+  return (await getConnection(db, input.id)) as PublicConnection;
+}
+
+/**
+ * Completes (or re-keys) a manual VIGIL connection: the user registered its receiver URL in VIGIL
+ * themselves, and pastes the signing secret VIGIL showed them once. Until then, deliveries are
+ * refused. (VIGIL makes the secret when the URL is registered, and that URL names this
+ * connection: so the connection comes first, the secret second.)
+ */
+export async function setVigilSecret(db: Database, keyring: Keyring, input: { id: string; ownerId: string; secret: string; now?: number }): Promise<PublicConnection> {
+  const conn = await loadConnection(db, keyring, input.id);
+  if (!conn || conn.ownerId !== input.ownerId || conn.type !== "vigil") throw new ConnectionError("connection not found");
+  if (conn.metadata.mode !== "manual") throw new ConnectionError("IGNITRA registered this receiver in VIGIL itself: its secret is already in place");
+  const secret = input.secret.trim();
+  if (secret.length < 16 || secret.length > 300) throw new ConnectionError("that does not look like VIGIL's signing secret");
+  await updateConnection(db, keyring, input.id, {
+    metadata: { ...conn.metadata, verified: true, verified_at: new Date(input.now ?? Date.now()).toISOString() },
+    secret: { webhook_secret: secret },
   });
   return (await getConnection(db, input.id)) as PublicConnection;
 }

@@ -25,6 +25,7 @@
     "viem": "catalog:"
   },
   "devDependencies": {
+    "@ignitra/sdk": "workspace:*",
     "@types/node": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:",

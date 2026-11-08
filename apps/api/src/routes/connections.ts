@@ -1,7 +1,7 @@
-import { and, eq, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { flowVersions, flows } from "@ignitra/db";
+import { flowVersions, flows, onchainGrants } from "@ignitra/db";
 import {
   ConnectionError,
   GoogleAuthError,
@@ -17,9 +17,13 @@ import {
   signOAuthState,
   startEmailConnection,
   verifyEmailConnection,
+  registerVigilWebhook,
+  setVigilSecret,
+  vigilApiBase,
   verifyOAuthState,
   webhookDestination,
 } from "@ignitra/actions";
+import { newId } from "@ignitra/core";
 import { authenticate, caller } from "../auth";
 import type { ApiContext } from "../context";
 import { eq as eqOp } from "drizzle-orm";
@@ -63,6 +67,42 @@ const createBody = z.discriminatedUnion("type", [
       headers: z.array(z.object({ name: z.string().min(1).max(100), value: z.string().min(1).max(4000) }).strict()).min(1).max(10),
       /** Give the connection its own signing secret (else the owner secret signs). */
       sign: z.boolean().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("vigil"),
+      label,
+      /** VIGIL's API: the site followed by /api/v1 (default: the operator's VIGIL_API_URL). */
+      api_url: z
+        .string()
+        .trim()
+        .max(500)
+        .refine(
+          (u) => {
+            try {
+              const p = new URL(u);
+              return (p.protocol === "https:" || p.protocol === "http:") && !p.username && !p.password;
+            } catch {
+              return false;
+            }
+          },
+          { message: "VIGIL's API URL, e.g. https://vigil.example/api/v1" },
+        )
+        .optional(),
+      /**
+       * `vgl_…`: used once to register IGNITRA's receiver in VIGIL, then forgotten. Without it, you
+       * register the receiver URL in VIGIL yourself and send its secret to …/verify.
+       */
+      api_key: z.string().trim().min(8).max(300).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("mandate"),
+      label,
+      /** The MANDATE policy endpoint IGNITRA asks before each onchain action. */
+      url: z.string().trim().min(1).max(2048),
     })
     .strict(),
 ]);
@@ -131,6 +171,48 @@ export function registerConnectionRoutes(app: FastifyInstance, ctx: ApiContext):
         reply.header("cache-control", "no-store");
         return reply.code(201).send({ data: connectionView(conn), ...(dest.signingSecret ? { signing_secret: dest.signingSecret } : {}) });
       }
+      if (body.type === "vigil") {
+        const id = newId("connection");
+        const receiverUrl = `${ctx.publicUrl}/v1/integrations/vigil/${id}`;
+        // Without a key the user registers the receiver URL in VIGIL, which then shows a secret
+        // once: it comes back through …/verify, and deliveries wait for it.
+        let secret: Record<string, unknown> = {};
+        let metadata: Record<string, unknown> = { mode: "manual", receiver_url: receiverUrl, verified: false };
+        if (body.api_key !== undefined) {
+          const apiUrl = body.api_url ?? ctx.vigilApiUrl;
+          if (!apiUrl) throw new ApiError(400, "invalid_request", "api_url is required: VIGIL's API, e.g. https://vigil.example/api/v1");
+          const created = await registerVigilWebhook(ctx.http, { apiUrl, apiKey: body.api_key, receiverUrl });
+          secret = { webhook_secret: created.secret };
+          metadata = { mode: "auto", vigil_host: new URL(vigilApiBase(apiUrl)).host, vigil_webhook_id: created.webhookId, receiver_url: receiverUrl };
+        }
+        const conn = await createConnection(ctx.db, ctx.keyring, {
+          id,
+          ownerId: me.userId,
+          type: "vigil",
+          label: body.label ?? fitLabel(metadata.vigil_host ? `VIGIL ${String(metadata.vigil_host)}` : "VIGIL"),
+          secret,
+          metadata,
+        });
+        reply.header("cache-control", "no-store");
+        return reply.code(201).send({
+          data: connectionView(conn),
+          receiver_url: receiverUrl,
+          ...(metadata.mode === "manual" ? { next: `Register receiver_url as a webhook in VIGIL, then send the signing secret VIGIL shows to POST /v1/connections/${id}/verify as webhook_secret.` } : {}),
+        });
+      }
+      if (body.type === "mandate") {
+        const dest = webhookDestination(body.url, { allowPrivate: ctx.allowPrivateOutbound });
+        const conn = await createConnection(ctx.db, ctx.keyring, {
+          ownerId: me.userId,
+          type: "mandate",
+          label: body.label ?? fitLabel(`MANDATE ${String(dest.metadata.host)}`),
+          secret: dest.secret,
+          metadata: dest.metadata,
+        });
+        reply.header("cache-control", "no-store");
+        // MANDATE verifies IGNITRA's policy requests with it: shown exactly once.
+        return reply.code(201).send({ data: connectionView(conn), signing_secret: dest.signingSecret });
+      }
       const dest = webhookDestination(body.url, { allowPrivate: ctx.allowPrivateOutbound });
       const conn = await createConnection(ctx.db, ctx.keyring, {
         ownerId: me.userId,
@@ -152,11 +234,19 @@ export function registerConnectionRoutes(app: FastifyInstance, ctx: ApiContext):
   app.post<{ Params: { id: string } }>("/v1/connections/:id/verify", async (req) => {
     const me = caller(req);
     if (!ctx.keyring) throw new ApiError(503, "not_configured", "connections are not available on this server");
-    const body = parse(z.object({ code: z.string().trim().regex(/^\d{6}$/, { message: "the code has 6 digits" }) }).strict(), req.body);
+    // An email address proves itself with the code we sent; a manual VIGIL connection with the secret VIGIL showed.
+    const body = parse(
+      z.union([z.object({ code: z.string().trim().regex(/^\d{6}$/, { message: "the code has 6 digits" }) }).strict(), z.object({ webhook_secret: z.string().trim().min(16).max(300) }).strict()]),
+      req.body,
+    );
     try {
+      if ("webhook_secret" in body) return { data: connectionView(await setVigilSecret(ctx.db, ctx.keyring, { id: req.params.id, ownerId: me.userId, secret: body.webhook_secret })) };
       return { data: connectionView(await verifyEmailConnection(ctx.db, ctx.keyring, { id: req.params.id, ownerId: me.userId, code: body.code })) };
     } catch (err) {
-      if (err instanceof ConnectionError) throw new ApiError(err.message === "connection not found" ? 404 : 422, err.message === "connection not found" ? "not_found" : "invalid_code", err.message);
+      if (err instanceof ConnectionError) {
+        const missing = err.message === "connection not found";
+        throw new ApiError(missing ? 404 : 422, missing ? "not_found" : "webhook_secret" in body ? "invalid_connection" : "invalid_code", err.message);
+      }
       throw err;
     }
   });
@@ -185,7 +275,8 @@ export function registerConnectionRoutes(app: FastifyInstance, ctx: ApiContext):
   app.delete<{ Params: { id: string } }>("/v1/connections/:id", async (req, reply) => {
     const me = caller(req);
     const id = req.params.id;
-    // Refuse while a flow's current version still sends through it: its steps would fail permanently.
+    // Refuse while a flow's current version still uses it (a step sends through it, or its trigger
+    // listens on it): the flow would fail permanently.
     const users = await ctx.db
       .select({ id: flows.id, name: flows.name })
       .from(flows)
@@ -194,7 +285,10 @@ export function registerConnectionRoutes(app: FastifyInstance, ctx: ApiContext):
         and(
           eq(flows.ownerId, me.userId),
           ne(flows.status, "disabled"),
-          sql`${flowVersions.definition} -> 'actions' @> ${JSON.stringify([{ params: { connection_id: id } }])}::jsonb`,
+          or(
+            sql`${flowVersions.definition} -> 'actions' @> ${JSON.stringify([{ params: { connection_id: id } }])}::jsonb`,
+            sql`${flowVersions.definition} -> 'trigger' -> 'params' ->> 'connection_id' = ${id}`,
+          ),
         ),
       );
     if (users.length > 0) {
@@ -202,7 +296,31 @@ export function registerConnectionRoutes(app: FastifyInstance, ctx: ApiContext):
         flows: users.map((f) => f.id),
       });
     }
-    if (!(await deleteConnection(ctx.db, id, me.userId))) throw notFound("connection");
+    // A MANDATE policy stays while a grant that must pass it can still act.
+    const grants = await ctx.db
+      .select({ id: onchainGrants.id, label: onchainGrants.label })
+      .from(onchainGrants)
+      .where(and(eq(onchainGrants.ownerId, me.userId), eq(onchainGrants.mandateConnectionId, id), inArray(onchainGrants.status, ["pending", "active"])));
+    const inUseByGrants = (found: Array<{ id: string; label: string }>) =>
+      new ApiError(409, "connection_in_use", `the MANDATE policy of ${found.length} onchain grant(s): ${found.map((g) => `${g.label} (${g.id})`).join(", ")}; revoke them first`, { grants: found.map((g) => g.id) });
+    if (grants.length > 0) throw inUseByGrants(grants);
+    let deleted: boolean;
+    try {
+      deleted = await ctx.db.transaction(async (t) => {
+        const tx = t as unknown as typeof ctx.db;
+        // Revoked and expired grants can never act again: they let go of it.
+        await tx
+          .update(onchainGrants)
+          .set({ mandateConnectionId: null })
+          .where(and(eq(onchainGrants.ownerId, me.userId), eq(onchainGrants.mandateConnectionId, id), inArray(onchainGrants.status, ["revoked", "expired"])));
+        return deleteConnection(tx, id, me.userId);
+      });
+    } catch (err) {
+      // A grant naming it was created meanwhile: the database keeps the link (foreign key).
+      if ((err as { code?: unknown }).code === "23503" || /foreign key/i.test((err as Error).message)) throw inUseByGrants([]);
+      throw err;
+    }
+    if (!deleted) throw notFound("connection");
     return reply.code(204).send();
   });
 }
@@ -212,7 +330,7 @@ export function registerConnectionRoutes(app: FastifyInstance, ctx: ApiContext):
  * session cookie itself, so every outcome ends on a page of the web app instead of JSON.
  */
 export function registerGoogleCallback(app: FastifyInstance, ctx: ApiContext): void {
-  const auth = authenticate({ db: ctx.db, corsOrigins: ctx.corsOrigins, now: ctx.now });
+  const auth = authenticate({ db: ctx.db, corsOrigins: ctx.corsOrigins, now: ctx.now, limiter: ctx.limiter, sessionPerMinute: ctx.rates.sessionPerMinute });
   const back = (reply: FastifyReply, query: Record<string, string>) =>
     reply.redirect(`${ctx.webUrl}/app/connections?${new URLSearchParams(query).toString()}`, 302);
 

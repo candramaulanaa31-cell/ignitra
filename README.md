@@ -8,10 +8,11 @@ listener / clock / inbound URL ──▶ trigger + condition engine ──▶ ru
  (chain)   (cron)   (HTTP POST)       (match, enrich, evaluate)     (unique key)     (retry)     (Telegram, webhook, push, chain read)
 ```
 
-> **Status: Phase 7 — Templates & public surface.** 14 ready-made templates in a public
-> gallery, one-click "Use template", shareable community templates, a landing page with a
-> live demo flow on mainnet, and full docs: triggers, conditions, actions, variables,
-> webhooks and the API.
+> **Status: Phase 8 — SDK, integrations and scoped onchain actions.** API keys and the
+> `@ignitra/sdk` TypeScript SDK; VIGIL alerts, TRUST LAYER scores, MANDATE policies and Pons
+> launches; and ONCHAIN_TX: transactions from the user's Safe through a scoped, revocable
+> session key (Zodiac Roles v2), off by default. Live VIGIL delivery and the npm release are
+> still open (see below).
 
 ## Layout
 
@@ -26,13 +27,14 @@ listener / clock / inbound URL ──▶ trigger + condition engine ──▶ ru
 | `packages/engine` | Trigger modules (chain, schedule, state, inbound), enrichment, flow service with plan limits, matcher (occurrences → runs, metering). |
 | `packages/chain` | RPC reader with failover, built-in ABIs, event decoder, contract-read encoding, explorer ABI registry. Test doubles under `@ignitra/chain/testing`. |
 | `packages/db` | Drizzle schema, SQL migrations, driver-agnostic client (Postgres or PGlite). |
-| `packages/sdk` | `@ignitra/sdk` skeleton (Phase 8). |
+| `packages/sdk` | `@ignitra/sdk`: typed, dependency-free API client and webhook verification. |
+| `contracts` | Foundry: `IgnitraSessionBounds`, the stateless onchain check of a grant's expiry and per-call ETH cap. |
 
 What lives in `packages/core`:
 
 - **`chain`**: Robinhood Chain mainnet/testnet presets, env overrides, viem chain, explorer links.
 - **`address`**: address and hash normalization. Stored lowercase, displayed as EIP-55, and mixed case with a bad checksum is rejected.
-- **`ids`**: prefixed, time-sortable ids (`fl_…`, `run_…`, `conn_…`, `usr_…`).
+- **`ids`**: prefixed, time-sortable ids (`fl_…`, `run_…`, `conn_…`, `usr_…`, `key_…`, `grt_…`, `oca_…`).
 - **`flow`**: Zod schema for a flow definition (trigger → conditions → actions + settings), bounded in size and depth.
 - **`catalog`**: closed vocabularies (trigger and action types, operators, statuses).
 - **`registry`**: shared module interfaces plus empty trigger, operator and action registries.
@@ -472,7 +474,7 @@ The official templates live in `packages/core/src/template-catalog.ts`. A test f
 | `mint-burn-telegram` | TOKEN_TRANSFER → TELEGRAM | token, chat |
 | `inbound-telegram-relay` | INBOUND_WEBHOOK → TELEGRAM | chat |
 
-Telegram stands in for Discord, as in Phase 4. VIGIL upgrade alerts and Pons launches come with the Phase 8 integrations. Until then, `proxy-upgraded-webhook` watches the EIP-1967 `Upgraded` event directly.
+Telegram stands in for Discord, as in Phase 4. Phase 8 adds four more (18 in all): `pons-launch-telegram`, `vigil-upgrade-webhook`, `vigil-critical-telegram` and `risky-buyer-telegram`. `proxy-upgraded-webhook` still watches the EIP-1967 `Upgraded` event directly, without VIGIL.
 
 **Sharing.** "Share as template" publishes the flow's current version and converts it automatically:
 
@@ -511,6 +513,74 @@ Validated live on mainnet (2026-11-07). The production build ran on :3300 with t
 
 Not exercised live: the Email and Sheets templates against real accounts (the actions were validated on stubs in Phase 6), and the Python verification snippet (no Python on the test machine; it mirrors the tested Node one).
 
+## SDK, integrations and onchain actions
+
+**API keys.** Team plan, made in Settings → API keys (or `POST /v1/api-keys` with a wallet session).
+
+- `igk_` + 32 random bytes, shown once. Only its SHA-256 and a 12-character prefix are stored. At most 20 active keys; revoking stops a key at once.
+- A key acts as its account, except that managing keys and creating or verifying onchain grants need the wallet. Revoking a grant works with a key.
+- Limits are token buckets: 600/min per key (stored per key), 600/min per signed-in account (`SESSION_RATE_PER_MINUTE`), and 300/min per client address on public routes (`PUBLIC_RATE_PER_MINUTE`). The landing page's `/v1/demo` has its own bucket at 4×.
+- Inbound hooks and VIGIL deliveries are limited per hook or connection. Failed lookups (unknown URL, bad token or signature) also spend a 120/min budget of the sender's address, so guessing is bounded while one sender delivering for many users is not.
+- Answers carry `RateLimit-Limit`, `-Remaining` and `-Reset`, plus `Retry-After` on a 429.
+
+**`@ignitra/sdk`** (`packages/sdk`, README there). Dependency-free ESM for Node 20+, Deno, Bun, browsers and edge runtimes.
+
+- Covers flows (`iterateRuns` pages for you), runs and traces, connections (incl. `setVigilSecret`), templates, catalogs and the account.
+- `parseWebhook`, `verifyWebhookSignature` and `signWebhookPayload` use WebCrypto.
+- A 429 is retried after `Retry-After`; 502, 503, 504 and network errors are retried only for idempotent requests.
+- `pnpm --filter @ignitra/sdk build` writes `dist/` (`prepack` runs it). Not published to npm yet.
+
+**Integrations.**
+
+| Service | In IGNITRA |
+|---|---|
+| VIGIL | The `VIGIL_ALERT` trigger. Add the connection in one of two ways. With a `vgl_` API key, IGNITRA registers its receiver in VIGIL itself and does not keep the key. Without one, the user registers the receiver URL in VIGIL, then pastes the secret VIGIL showed into `POST /v1/connections/:id/verify`; deliveries are refused until then. The receiver `POST /v1/integrations/vigil/:connection_id` checks `x-vigil-signature` (HMAC over `"<ts>.<raw body>"`, 5 min). The trigger's options are stage, minimum severity, rules, contracts and retractions. Each alert runs once per stage. |
+| TRUST LAYER | `counterparty_trust_score`, `from_trust_*` and `to_trust_*` (score, band, status) for conditions and templates. Lookups are lazy: only for flows that read them, after the other conditions pass, cached per address, with a circuit breaker. A 429 pauses every lookup for its `Retry-After`. A score is never invented: without one the score is null and `*_trust_status` says why (`pending`, `unavailable`, …). Set `TRUST_LAYER_API_URL` (and `_KEY`). |
+| MANDATE | The policy every ONCHAIN_TX must pass, defined here: a signed POST of the exact call (`onchain.intent`), answered `{"decision":"allow"|"deny"}`. Only `allow` sends. `deny` is final; anything else is retried and nothing is sent. `ONCHAIN_MANDATE_REQUIRED` (default true) makes it mandatory for every grant. |
+| Pons | The `NEW_LAUNCH` trigger: `TokenLaunched` on the Pons V2 factory. It gives the token, the deployer (`counterparty`), the curve, the pair (ETH or a token), the graduation threshold and the socials (unverified). |
+
+**Onchain actions (ONCHAIN_TX).** Team plan; a flow must opt in (`settings.onchain`) and run on confirmed events.
+
+- **Grant.** IGNITRA makes a session key per grant, stores it encrypted and wipes it on revoke or expiry. The user's Safe gives that key a Zodiac Roles v2 role: specific targets and functions only.
+- **Limits.** Amounts per call (`LessThan`) and per day (`WithinAllowance`), ETH per day (`EtherWithinAllowance`), and ETH per call plus the expiry (`IgnitraSessionBounds`, a stateless `Custom` condition) are all enforced on chain. The Roles mastercopy on Robinhood Chain is byte-identical to the copy verified on Ethereum.
+- **Refused scopes.** The Safe, its Roles modifier and every enabled module can not be targets. Token movers without amount caps, read-only functions and expiries outside 10 min–90 days are refused. Delegatecall is never allowed.
+- **Approval.** One Safe transaction batched through MultiSendCallOnly. It deploys the modifier and the bounds contract the first time, enables the modifier, gives the role, scopes each function and sets the daily allowances. A 1-of-N owner sends it from the wallet (pre-validated signature); otherwise it goes out as a Safe Transaction Builder file.
+- **Verification.** The mined transaction's Roles events are replayed in log order into the permissions they leave, which must be exactly the grant. Then the module, its owner, avatar and target, and the bounds contract are checked live. Only then is the grant active.
+- **Execution.** Scope and daily totals, then MANDATE, then a simulation as the session key (Roles refusals are explained). The transaction is signed and recorded under a row lock on the grant, then broadcast under that lock, so a revocation committed first stops it.
+- **Guarantees.** A step is signed at most once: retries re-send the same bytes and a record is never overwritten. Nonces are held for transactions the node has not seen yet. TEST runs only simulate. Every attempt is logged in `onchain_actions` with its hash.
+- **Revoke.** In IGNITRA, at once (the key is deleted), plus the Safe transaction that also removes the role.
+
+**Web.** New and changed screens:
+
+- Settings has API keys; Connections adds VIGIL (with the two-step manual setup) and MANDATE.
+- `/app/onchain` creates grants, approves them from the wallet or a Transaction Builder file, verifies, revokes, and shows the session key's gas balance and the action log.
+- The builder adds Pons launch and VIGIL alert triggers, and an Onchain transaction step (grant → contract → function) with its opt-in.
+- Docs: `/docs/integrations`, `/docs/onchain` and `/docs/sdk`; the API page covers keys and grants.
+
+**Validated (2026-11-08).** Typecheck plus 528 tests.
+
+- The fork test (`FORK_TESTS=1`, anvil on a mainnet fork) uses the real Safe 1.4.1, Roles v2, MultiSendCallOnly and USDG contracts.
+- It proves every limit is enforced by the chain itself, not only by IGNITRA: ETH and USDG per call and per day, functions, targets and expiry.
+- It also covers MANDATE deny, down and allow, exactly-once, TEST simulation, and revocation on the Safe and in IGNITRA.
+
+Live on mainnet, with a local backend, the web app, a stub receiver and a throwaway test wallet:
+
+| Check | Result |
+|---|---|
+| SDK (the built package) with an API key | 10/10: account, catalog, connections (webhook, MANDATE, Telegram, VIGIL pending), validate with trust fields, 422 issues, create, TEST run, `iterateRuns`, pause. An API key can not create keys or grants (403 `session_required`). |
+| Webhooks | 31 deliveries (30 real USDG transfers + 1 TEST), 31 verified by the SDK's `parseWebhook`. The busy flow then auto-paused at `max_runs_per_hour`. |
+| TRUST LAYER | Real lookups against a running Trust Layer. It answered 202 (still indexing), giving `pending`, then 429, giving `unavailable`; a score was never invented. This led to honouring `Retry-After`. |
+| Pons | The latest real launch decoded through `/v1/samples`: LimeLift (LIME), block 108,642,056, ETH pair, 4.2 ETH graduation, socials. |
+| Grant on a real Safe | A pending grant for a mainnet Safe 1.4.1 that is not ours: 7 planned calls and a Transaction Builder file. Without MANDATE → 422; with an API key → 403; verifying an unrelated transaction → refused with the reasons. Nothing was sent. |
+| UI | Headless Edge: Settings, Connections, Onchain, the grant page, the builder with an Onchain transaction step, the new docs. No page errors, no horizontal overflow. |
+
+Not validated live yet:
+
+- **VIGIL deliveries.** VIGIL refuses private receiver URLs, so this needs a public URL.
+- **ONCHAIN_TX on mainnet.** It needs a Safe we own; the fork test proves it.
+- **A `scored` TRUST LAYER answer.** The test instance could not index: its explorer calls answered HTTP 402.
+- **The npm release.**
+
 ## Scripts
 
 | Command | |
@@ -542,5 +612,5 @@ Not exercised live: the Email and Sheets templates against real accounts (the ac
 5. **Accounts and API** ✅ SIWE (EOA + ERC-1271), connections and flows API, SCHEDULE / STATE_CHANGE / INBOUND_WEBHOOK, CHAIN_READ, plan limits + metering
 6. **Builder UI** ✅ builder, live samples, Test flow, variable picker, dashboard, run traces, HTTP_REQUEST / EMAIL / GOOGLE_SHEETS, PWA
 7. **Templates + public surface** ✅ 14 official templates, gallery, use / share templates, landing with a live demo, docs
-8. SDK, integrations, scoped onchain actions
+8. **SDK, integrations, scoped onchain actions** (built and validated; open: live VIGIL delivery, npm release) API keys, `@ignitra/sdk`, VIGIL / TRUST LAYER / MANDATE / Pons, ONCHAIN_TX via Safe + Zodiac Roles v2
 9. Hardening + launch

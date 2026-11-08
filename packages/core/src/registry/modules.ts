@@ -21,7 +21,8 @@ export interface TriggerDefinition<TParams = unknown> {
   readonly source: TriggerSource;
   /** Validates `flow.trigger.params` when a flow is saved. */
   readonly paramsSchema: z.ZodType<TParams>;
-  // Phase 3 adds: event filter derivation, matcher, enrichment.
+  /** Triggers fed by an integration (VIGIL_ALERT) name the connection type `params.connection_id` must be. */
+  readonly connectionType?: ConnectionType;
 }
 
 /** Why a condition could not be evaluated as written (shown in run traces). */
@@ -125,6 +126,31 @@ export interface ActionContext {
   readonly ownerSigningSecret: string | null;
   /** eth_call against the chain (null when the runner has no RPC configured). */
   readonly chain: ChainCallClient | null;
+  /** The flow owner (actions that act on the owner's own resources, e.g. ONCHAIN_TX grants). */
+  readonly ownerId?: string;
+  /** The running flow version's settings (ONCHAIN_TX needs `onchain: true` and confirmed mode). */
+  readonly flowSettings?: { readonly mode: string; readonly onchain?: boolean };
+}
+
+/** A mined transaction, as ONCHAIN_TX needs it. */
+export interface TxReceiptSummary {
+  readonly status: "success" | "reverted";
+  readonly blockNumber: number;
+  readonly gasUsed: bigint;
+  readonly logs: ReadonlyArray<{ readonly address: NormalizedAddress; readonly topics: readonly `0x${string}`[]; readonly data: `0x${string}`; readonly logIndex: number }>;
+}
+
+/** Writes to the chain (ONCHAIN_TX), over the runner's RPC. Reverts throw CallRevertedError (@ignitra/chain). */
+export interface ChainTxClient {
+  nonce(address: NormalizedAddress): Promise<number>;
+  balance(address: NormalizedAddress): Promise<bigint>;
+  call(tx: { readonly from: NormalizedAddress; readonly to: NormalizedAddress; readonly data: `0x${string}`; readonly value?: bigint }): Promise<`0x${string}`>;
+  getCode(address: NormalizedAddress): Promise<`0x${string}`>;
+  estimateGas(tx: { readonly from: NormalizedAddress; readonly to: NormalizedAddress; readonly data: `0x${string}`; readonly value: bigint }): Promise<bigint>;
+  fees(): Promise<{ readonly maxFeePerGas: bigint; readonly maxPriorityFeePerGas: bigint }>;
+  /** The transaction hash; a transaction the node already knows answers its hash too. */
+  sendRawTransaction(raw: `0x${string}`): Promise<`0x${string}`>;
+  receipt(hash: `0x${string}`): Promise<TxReceiptSummary | null>;
 }
 
 /** Summaries stored in run_steps — never raw secrets. */

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { ChainCallClient } from "@ignitra/core";
 import { chainConfigFromEnv, envVar, keyringFromEnv, parseEnv, encryptionEnvSchema, workerEnvSchema, type Keyring } from "@ignitra/core/server";
-import { createRpcChainReader } from "@ignitra/chain";
+import { createChainWriter, createRpcChainReader, type RpcChainReader } from "@ignitra/chain";
 import type { Logger } from "pino";
 import type { Database } from "@ignitra/db";
 import { createRunner, type RunnerRuntime } from "./runtime";
@@ -53,6 +53,8 @@ export const runnerEnvShape = {
   RUNNER_HEALTH_PORT: envVar.withDefault(envVar.int(0, 65_535).default(4002)),
   /** DEV ONLY: allow outbound requests to private/loopback networks (local receivers). */
   OUTBOUND_ALLOW_PRIVATE: flag(false),
+  /** ONCHAIN_TX: every grant must name a MANDATE policy that allows each transaction (spec default). */
+  ONCHAIN_MANDATE_REQUIRED: flag(true),
   OUTBOUND_TIMEOUT_MS: envVar.withDefault(envVar.int(1000, 60_000).default(10_000)),
 } as const;
 
@@ -98,13 +100,17 @@ export function vapidFromEnv(env: RunnerEnv): VapidConfig | null {
 }
 
 /** RPC reader for CHAIN_READ (presets supply a public RPC for Robinhood Chain); verifies the chain id before reading. */
-function chainFromEnv(env: RunnerEnv): ChainCallClient {
+function chainFromEnv(env: RunnerEnv): RpcChainReader {
   const chain = chainConfigFromEnv(env);
   return createRpcChainReader({ primary: chain.rpc.primary, fallback: chain.rpc.fallback }, { expectedChainId: chain.id });
 }
 
 /** Builds a runner from env, logging what is (not) configured. */
 export function createRunnerFromEnv(env: RunnerEnv, deps: { db: Database; logger: Logger; owner: string; chain?: ChainCallClient }): RunnerRuntime {
+  const reader = deps.chain ?? chainFromEnv(env);
+  const chainConfig = chainConfigFromEnv(env);
+  // ONCHAIN_TX writes through the same RPC pool (with its fallback) as reads.
+  const writer = "pool" in reader ? createChainWriter((reader as RpcChainReader).pool) : null;
   const keyring = keyringFromRunnerEnv(env);
   const vapid = vapidFromEnv(env);
   if (!keyring) deps.logger.warn("ENCRYPTION_KEY not set — steps that use connections (TELEGRAM, connection webhooks) will fail");
@@ -130,6 +136,7 @@ export function createRunnerFromEnv(env: RunnerEnv, deps: { db: Database; logger
     ...(env.TELEGRAM_API_URL ? { telegramApiBase: env.TELEGRAM_API_URL } : {}),
     email,
     google,
-    chain: deps.chain ?? chainFromEnv(env),
+    chain: reader,
+    onchain: writer ? { writer, chainId: chainConfig.id, explorerUrl: chainConfig.explorerUrl ?? null, mandateRequired: env.ONCHAIN_MANDATE_REQUIRED } : null,
   });
 }

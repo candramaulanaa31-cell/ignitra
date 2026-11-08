@@ -3,6 +3,7 @@ import { CHAIN_EVIDENCE_FIELDS, LOG_EVIDENCE_FIELDS, type FieldSpec } from "@ign
 import { logEvidence, logKey } from "../evidence";
 import { addressParam } from "../params";
 import type { LogTriggerModule, TriggerOutcome } from "../types";
+import { TRUST_ROLES, trustFields } from "../enrich/trust";
 import { TRANSFER_TOPIC, amountFields, amountPayload, isZero, parseErc20Transfer, percentOf, tokenFields, tokenPayload } from "./erc20";
 
 /**
@@ -39,6 +40,8 @@ const FIELDS: readonly FieldSpec[] = [
   { path: "is_burn", type: "boolean", description: "Sent to the zero address" },
   { path: "wallet", type: "address", description: "The watched wallet, if any", nullable: true },
   { path: "direction", type: "string", description: "`in` / `out` relative to the watched wallet", nullable: true },
+  { path: "counterparty", type: "address", description: "The other side of the watched wallet (null without a wallet)", nullable: true },
+  ...trustFields(TRUST_ROLES.TOKEN_TRANSFER ?? []),
 ];
 
 export const tokenTransferTrigger: LogTriggerModule<TokenTransferParams> = {
@@ -86,6 +89,7 @@ export const tokenTransferTrigger: LogTriggerModule<TokenTransferParams> = {
           is_burn: isZero(transfer.to),
           wallet: p.wallet ?? null,
           direction,
+          counterparty: direction === "in" ? transfer.from : direction === "out" ? transfer.to : null,
         },
       });
     }

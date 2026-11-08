@@ -22,7 +22,11 @@ export type Widget =
   | "function" // view function signature, picked from the detected ABI
   | "args" // call arguments (literal or variables)
   | "list" // list of templates (sheet columns)
-  | "pairs"; // name / value list (headers, form fields)
+  | "strings" // list of plain values (rule ids, addresses)
+  | "pairs" // name / value list (headers, form fields)
+  | "grant" // an onchain grant of the user's Safe
+  | "grant-target" // a contract the chosen grant covers
+  | "grant-function"; // a function the grant allows on that contract
 
 export interface FormField {
   readonly key: string;
@@ -68,7 +72,19 @@ export const TRIGGER_FORMS: Readonly<Record<string, readonly FormField[]>> = {
     { key: "cron", label: "Schedule (cron)", widget: "cron", placeholder: "0 9 * * 1-5", help: "minute hour day month weekday — e.g. 0 9 * * 1-5 = 09:00 Monday to Friday." },
     { key: "timezone", label: "Timezone", widget: "timezone", defaultValue: "Asia/Jakarta" },
   ],
+  NEW_LAUNCH: [
+    { key: "launchpad", label: "Launchpad", widget: "select", options: opts(["pons", "Pons"]), defaultValue: "pons" },
+    { key: "deployer", label: "Launched by", widget: "address", optional: true, placeholder: "0x… wallet (optional)", help: "Only launches by this wallet. Socials are what the launcher typed: unverified." },
+  ],
   INBOUND_WEBHOOK: [],
+  VIGIL_ALERT: [
+    { key: "connection_id", label: "VIGIL", widget: "connection", connectionType: "vigil", help: "Alerts from your VIGIL account (Connections)." },
+    { key: "stage", label: "Run on", widget: "select", options: opts(["confirmed", "Confirmed alerts"], ["pending", "New alerts, before confirmation"]), defaultValue: "confirmed" },
+    { key: "min_severity", label: "At least", widget: "select", options: opts(["low", "Low"], ["medium", "Medium"], ["high", "High"], ["critical", "Critical"]), defaultValue: "low" },
+    { key: "rules", label: "Only these VIGIL rules", widget: "strings", optional: true, placeholder: "PROXY_UPGRADE_V1" },
+    { key: "contracts", label: "Only these contracts", widget: "strings", optional: true, placeholder: "0x… contract" },
+    { key: "include_retracted", label: "Also run when VIGIL retracts an alert", widget: "bool", defaultValue: false },
+  ],
 };
 
 export const ACTION_FORMS: Readonly<Record<string, readonly FormField[]>> = {
@@ -116,6 +132,13 @@ export const ACTION_FORMS: Readonly<Record<string, readonly FormField[]>> = {
     { key: "subject", label: "Subject", widget: "template", defaultValue: "{{flow.name}}" },
     { key: "body", label: "Body", widget: "template-area", defaultValue: "" },
   ],
+  ONCHAIN_TX: [
+    { key: "grant_id", label: "Grant", widget: "grant", help: "A scoped, revocable permission from your Safe (Onchain)." },
+    { key: "to", label: "Contract", widget: "grant-target", source: "grant_id" },
+    { key: "function", label: "Function", widget: "grant-function", source: "to" },
+    { key: "args", label: "Arguments", widget: "args", optional: true },
+    { key: "value", label: "ETH to send", widget: "template", defaultValue: "0", placeholder: "0", help: "In ETH, e.g. 0.01. The grant caps it per call and per day, on chain." },
+  ],
   GOOGLE_SHEETS: [
     { key: "connection_id", label: "Google account", widget: "connection", connectionType: "google" },
     { key: "spreadsheet", label: "Spreadsheet", widget: "text", placeholder: "https://docs.google.com/spreadsheets/d/…" },
@@ -131,4 +154,6 @@ export const CONNECTION_LABELS: Readonly<Record<string, string>> = {
   email: "Email address",
   google: "Google account",
   http: "HTTP secret headers",
+  vigil: "VIGIL",
+  mandate: "MANDATE policy",
 };

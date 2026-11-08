@@ -1,17 +1,49 @@
 {
   "name": "@ignitra/sdk",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "license": "MIT",
   "type": "module",
-  "description": "TypeScript SDK for the IGNITRA API. Skeleton in Phase 1; implemented in Phase 8.",
+  "description": "TypeScript SDK for IGNITRA, onchain automation for Robinhood Chain: flows, runs, connections, templates and webhook verification.",
+  "keywords": [
+    "ignitra",
+    "robinhood-chain",
+    "automation",
+    "webhooks",
+    "onchain",
+    "sdk"
+  ],
   "exports": {
     ".": "./src/index.ts"
   },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      }
+    },
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "sideEffects": false,
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "prepack": "pnpm run build"
   },
   "devDependencies": {
     "@types/node": "catalog:",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }

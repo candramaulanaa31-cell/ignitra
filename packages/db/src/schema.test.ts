@@ -10,7 +10,7 @@ import { connections, flowVersions, flows, runSteps, runs, users } from "./schem
 const DEFINITION: FlowDefinition = {
   trigger: { type: "TOKEN_TRANSFER", params: { token: "0x0000000000000000000000000000000000000001" } },
   actions: [{ step_id: "notify", type: "DISCORD", params: {} }],
-  settings: { mode: "confirmed", max_runs_per_hour: 60 },
+  settings: { mode: "confirmed", max_runs_per_hour: 60, onchain: false },
 };
 
 /** Drizzle wraps driver errors; the Postgres error (code, constraint) is on `cause`. */

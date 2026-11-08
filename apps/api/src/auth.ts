@@ -1,12 +1,12 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, eq, gt, lt, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { decodeFunctionResult, encodeFunctionData, hashMessage, parseAbi, recoverAddress, type Hex } from "viem";
 import { parseSiweMessage } from "viem/siwe";
-import { isValidAddress, newId, normalizeAddress, type NormalizedAddress, type Plan } from "@ignitra/core";
+import { isValidAddress, newId, normalizeAddress, planLimits, type NormalizedAddress, type Plan } from "@ignitra/core";
 import { RpcQueryError, type ChainReader } from "@ignitra/chain";
-import { authNonces, sessions, users, type Database } from "@ignitra/db";
-import { ApiError, readCookie } from "./http";
+import { apiKeys, authNonces, sessions, users, type Database } from "@ignitra/db";
+import { ApiError, readCookie, type CallerLimiter } from "./http";
 
 /**
  * Sign-In with Ethereum (EIP-4361). No passwords, no private keys:
@@ -38,8 +38,10 @@ export interface AuthContext {
   readonly address: NormalizedAddress;
   readonly plan: Plan;
   readonly timezone: string;
-  readonly sessionId: string;
-  readonly via: "cookie" | "bearer";
+  /** The wallet session; null for API-key requests. */
+  readonly sessionId: string | null;
+  readonly apiKeyId: string | null;
+  readonly via: "cookie" | "bearer" | "api_key";
 }
 
 declare module "fastify" {
@@ -176,16 +178,57 @@ function bearer(req: FastifyRequest): string | null {
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
+// ---- API keys ---------------------------------------------------------------------
+
+export const API_KEY_PREFIX = "igk_";
+
+/** A new API key: the secret is returned to the user once; only the hash and prefix are stored. */
+export function generateApiKey(): { token: string; prefix: string; hash: string } {
+  const token = `${API_KEY_PREFIX}${randomBytes(32).toString("base64url")}`;
+  return { token, prefix: token.slice(0, 12), hash: sha256(token) };
+}
+
+export interface AuthDeps {
+  readonly db: Database;
+  readonly corsOrigins: readonly string[];
+  readonly now: () => number;
+  readonly limiter: CallerLimiter;
+  readonly sessionPerMinute: number;
+}
+
 /**
- * onRequest hook for authenticated routes. Accepts `Authorization: Bearer igs_…`
- * or the HttpOnly session cookie. Cookie-authenticated writes must come from an
- * allow-listed Origin (CSRF protection on top of SameSite=Lax).
+ * onRequest hook for authenticated routes. Accepts:
+ *   - `Authorization: Bearer igk_…`: an API key (Team plan), limited per key;
+ *   - `Authorization: Bearer igs_…` or the HttpOnly session cookie: a wallet session, limited per user.
+ * Cookie-authenticated writes must come from an allow-listed Origin (CSRF protection on top of
+ * SameSite=Lax). Bearer credentials are not sent by browsers on their own, so they need no Origin.
  */
-export function authenticate(deps: { db: Database; corsOrigins: readonly string[]; now: () => number }) {
-  return async (req: FastifyRequest, _reply: FastifyReply): Promise<void> => {
+export function authenticate(deps: AuthDeps) {
+  const lastUsedWrites = new Map<string, number>();
+  return async (req: FastifyRequest, reply: FastifyReply): Promise<void> => {
     const fromHeader = bearer(req);
+    if (fromHeader?.startsWith(API_KEY_PREFIX)) {
+      const [key] = await deps.db
+        .select({ keyId: apiKeys.id, rate: apiKeys.ratePerMinute, userId: users.id, address: users.address, plan: users.plan, timezone: users.timezone })
+        .from(apiKeys)
+        .innerJoin(users, eq(users.id, apiKeys.userId))
+        .where(and(eq(apiKeys.tokenHash, sha256(fromHeader)), isNull(apiKeys.revokedAt)));
+      if (!key) throw new ApiError(401, "invalid_api_key", "unknown or revoked API key");
+      if (!planLimits(key.plan).apiKeys) {
+        throw new ApiError(403, "plan_required", `API keys are part of the team plan; this account is on ${key.plan}. Wallet sessions keep working.`, { plan: key.plan, required: "team" });
+      }
+      deps.limiter.enforce(`key:${key.keyId}`, key.rate, reply);
+      const now = deps.now();
+      if ((lastUsedWrites.get(key.keyId) ?? 0) < now - 60_000) {
+        lastUsedWrites.set(key.keyId, now);
+        await deps.db.update(apiKeys).set({ lastUsedAt: new Date(now) }).where(eq(apiKeys.id, key.keyId));
+      }
+      req.auth = { userId: key.userId, address: key.address as NormalizedAddress, plan: key.plan, timezone: key.timezone, sessionId: null, apiKeyId: key.keyId, via: "api_key" };
+      return;
+    }
+
     const token = fromHeader ?? readCookie(req, SESSION_COOKIE);
-    if (!token) throw new ApiError(401, "unauthenticated", "sign in with your wallet first (POST /v1/auth/verify)");
+    if (!token) throw new ApiError(401, "unauthenticated", "sign in with your wallet first (POST /v1/auth/verify), or send an API key");
     const [row] = await deps.db
       .select({ sessionId: sessions.id, userId: users.id, address: users.address, plan: users.plan, timezone: users.timezone })
       .from(sessions)
@@ -197,8 +240,18 @@ export function authenticate(deps: { db: Database; corsOrigins: readonly string[
       const origin = req.headers.origin;
       if (!origin || !deps.corsOrigins.includes(origin)) throw new ApiError(403, "bad_origin", "cross-site request refused");
     }
-    req.auth = { userId: row.userId, address: row.address as NormalizedAddress, plan: row.plan, timezone: row.timezone, sessionId: row.sessionId, via };
+    deps.limiter.enforce(`user:${row.userId}`, deps.sessionPerMinute, reply);
+    req.auth = { userId: row.userId, address: row.address as NormalizedAddress, plan: row.plan, timezone: row.timezone, sessionId: row.sessionId, apiKeyId: null, via };
   };
+}
+
+/** Routes that manage credentials or sign-in itself answer wallet sessions only, never an API key. */
+export function requireSession(req: FastifyRequest): AuthContext & { sessionId: string } {
+  const auth = caller(req);
+  if (auth.via === "api_key" || auth.sessionId === null) {
+    throw new ApiError(403, "session_required", "this needs a signed-in wallet session; API keys cannot manage credentials");
+  }
+  return auth as AuthContext & { sessionId: string };
 }
 
 /** The authenticated caller (routes behind `authenticate`). */

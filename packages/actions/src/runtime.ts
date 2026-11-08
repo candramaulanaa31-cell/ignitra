@@ -1,5 +1,5 @@
 import type { Logger } from "pino";
-import type { ActionRegistry, ChainCallClient, SafeHttpClient } from "@ignitra/core";
+import type { ActionRegistry, ChainCallClient, ChainTxClient, SafeHttpClient } from "@ignitra/core";
 import type { Keyring } from "@ignitra/core/server";
 import type { Database, Run } from "@ignitra/db";
 import type { EmailConfig } from "./email";
@@ -125,6 +125,9 @@ export class RunnerRuntime {
   async housekeeping(): Promise<void> {
     await this.notifier.revertNotices();
     await this.notifier.ownerNotifications();
+    // Expired grants stop and lose their session key (the chain enforces expiry too).
+    const expired = await this.notifier.expireOnchainGrants();
+    if (expired > 0) this.#log.info({ expired }, "onchain grants expired");
   }
 
   /** Waits until every in-flight run settled (tests, graceful shutdown). */
@@ -186,6 +189,8 @@ export interface RunnerConfig {
   google?: GoogleConfig | null;
   /** Chain RPC for CHAIN_READ. */
   chain?: ChainCallClient | null;
+  /** Chain writes for ONCHAIN_TX (needs the keyring too). */
+  onchain?: { writer: ChainTxClient; chainId: number; explorerUrl: string | null; mandateRequired: boolean; receiptTimeoutMs?: number } | null;
   /** Overrides (tests). */
   http?: SafeHttpClient;
   actions?: ActionRegistry;
@@ -198,9 +203,10 @@ export function createRunner(config: RunnerConfig): RunnerRuntime {
       allowPrivate: config.outbound?.allowPrivateNetworks ?? false,
       ...(config.outbound?.timeoutMs ? { timeoutMs: config.outbound.timeoutMs } : {}),
     });
+  const onchain = config.onchain && config.keyring ? { db: config.db, keyring: config.keyring, ...config.onchain } : null;
   const actions =
     config.actions ??
-    createActionModules({ ...(config.telegramApiBase ? { telegramApiBase: config.telegramApiBase } : {}), email: config.email ?? null, google: config.google ?? null });
+    createActionModules({ ...(config.telegramApiBase ? { telegramApiBase: config.telegramApiBase } : {}), email: config.email ?? null, google: config.google ?? null, onchain });
   if (config.vapid) assertVapid(config.vapid);
   const push = config.vapid ? new WebPushSender({ db: config.db, vapid: config.vapid, http, logger: config.logger }) : null;
   const queue = new RunQueue(config.db, { owner: config.owner, ...(config.leaseMs ? { leaseMs: config.leaseMs } : {}) });

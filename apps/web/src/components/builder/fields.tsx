@@ -5,7 +5,7 @@ import { isValidAddress } from "@ignitra/core";
 import { api } from "@/lib/api";
 import { insertAtCursor, type VariableGroup } from "@/lib/builder";
 import type { FormField } from "@/lib/forms";
-import type { AddressInfo, Connection } from "@/lib/types";
+import type { AddressInfo, Connection, Grant } from "@/lib/types";
 import { Field } from "../ui";
 
 // ---- address detection (cached per address) -------------------------------------------
@@ -169,6 +169,8 @@ export interface FieldContext {
   readonly set: (key: string, value: unknown) => void;
   readonly groups: readonly VariableGroup[];
   readonly connections: readonly Connection[];
+  /** The user's onchain grants (ONCHAIN_TX steps pick one). */
+  readonly grants: readonly Grant[];
   readonly errors: ReadonlyMap<string, string[]>;
   /** Detection results of address fields in this card, by key. */
   readonly detected: Readonly<Record<string, AddressInfo | null | "loading">>;
@@ -224,6 +226,32 @@ function ListEditor({ value, onChange, groups, placeholder }: { value: unknown; 
     </div>
   );
 }
+
+/** Plain values, one per row (no variables): rule ids, contract addresses. */
+function StringsEditor({ value, onChange, placeholder }: { value: unknown; onChange: (v: string[] | undefined) => void; placeholder: string | undefined }) {
+  const rows = Array.isArray(value) ? (value as unknown[]).map(String) : [];
+  // An empty list means "no filter": the key is left out rather than sent empty.
+  const commit = (next: string[]) => onChange(next.length > 0 ? next : undefined);
+  return (
+    <div className="stack" style={{ gap: 6 }}>
+      {rows.map((r, i) => (
+        <div key={i} className="row">
+          <input className="mono grow" value={r} placeholder={placeholder} onChange={(e) => commit(rows.map((x, j) => (j === i ? e.target.value.trim() : x)))} spellCheck={false} />
+          <button type="button" className="btn sm ghost" onClick={() => commit(rows.filter((_, j) => j !== i))} aria-label="Remove">
+            ×
+          </button>
+        </div>
+      ))}
+      <div>
+        <button type="button" className="btn sm" onClick={() => onChange([...rows, ""])}>
+          + Add
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const GRANT_STATUS_NOTE: Readonly<Record<string, string>> = { pending: " (approve it on the Safe first)", revoked: " (revoked)", expired: " (expired)" };
 
 /** Event / function signature: a select from the detected ABI, or free text. */
 function SignaturePicker({ value, onChange, options, placeholder, invalid }: { value: string; onChange: (v: string) => void; options: readonly string[]; placeholder: string | undefined; invalid: boolean }) {
@@ -345,6 +373,101 @@ export function ParamField({ field, ctx }: { field: FormField; ctx: FieldContext
     case "args":
       input = <ListEditor value={value} onChange={set} groups={ctx.groups} placeholder="Argument" />;
       break;
+    case "strings":
+      input = <StringsEditor value={value} onChange={set} placeholder={field.placeholder} />;
+      break;
+    case "grant": {
+      const usable = ctx.grants.filter((g) => g.status !== "revoked" && g.status !== "expired");
+      input = (
+        <div className="stack" style={{ gap: 4 }}>
+          <select
+            value={str}
+            aria-invalid={invalid || undefined}
+            onChange={(e) => {
+              const next = ctx.grants.find((g) => g.id === e.target.value);
+              set(e.target.value);
+              // A contract the new grant does not cover cannot stay picked.
+              if (!next?.scope.targets.some((t) => t.address === ctx.params.to)) {
+                ctx.set("to", "");
+                ctx.set("function", "");
+              }
+            }}
+          >
+            <option value="">{usable.length === 0 ? "No grant yet" : "Choose…"}</option>
+            {ctx.grants.map((g) => (
+              <option key={g.id} value={g.id} disabled={g.status === "revoked" || g.status === "expired"}>
+                {g.label} · Safe {g.safe.slice(0, 8)}…{GRANT_STATUS_NOTE[g.status] ?? ""}
+              </option>
+            ))}
+          </select>
+          <a href="/app/onchain" target="_blank" rel="noreferrer" className="small">
+            {usable.length === 0 ? "Create one in Onchain ↗" : "Manage grants ↗"}
+          </a>
+        </div>
+      );
+      break;
+    }
+    case "grant-target": {
+      const grant = ctx.grants.find((g) => g.id === ctx.params.grant_id);
+      input = (
+        <select
+          className="mono"
+          value={str}
+          aria-invalid={invalid || undefined}
+          disabled={!grant}
+          onChange={(e) => {
+            set(e.target.value);
+            ctx.set("function", "");
+          }}
+        >
+          <option value="">{grant ? "Choose a contract in the grant…" : "Choose a grant first"}</option>
+          {grant?.scope.targets.map((t) => (
+            <option key={t.address} value={t.address}>
+              {t.address} ({t.functions.length} function{t.functions.length === 1 ? "" : "s"})
+            </option>
+          ))}
+        </select>
+      );
+      break;
+    }
+    case "grant-function": {
+      const grant = ctx.grants.find((g) => g.id === ctx.params.grant_id);
+      const target = grant?.scope.targets.find((t) => t.address === ctx.params.to);
+      const picked = target?.functions.find((f) => f.signature === str);
+      input = (
+        <div className="stack" style={{ gap: 4 }}>
+          <select
+            className="mono"
+            value={str}
+            aria-invalid={invalid || undefined}
+            disabled={!target}
+            onChange={(e) => {
+              set(e.target.value);
+              const fn = target?.functions.find((f) => f.signature === e.target.value);
+              if (!fn) return;
+              // One argument per parameter, keeping what was typed.
+              const args = Array.isArray(ctx.params.args) ? (ctx.params.args as unknown[]).map(String) : [];
+              ctx.set("args", fn.inputs.map((_, i) => args[i] ?? ""));
+            }}
+          >
+            <option value="">{target ? "Choose a function…" : "Choose a contract first"}</option>
+            {target?.functions.map((f) => (
+              <option key={f.selector} value={f.signature}>
+                {f.signature}
+              </option>
+            ))}
+          </select>
+          {picked ? (
+            <span className="small muted">
+              {picked.inputs.length === 0 ? "No arguments." : `Arguments: ${picked.inputs.map((t, i) => `${i + 1}. ${t}`).join(" · ")}.`}
+              {picked.amount ? ` Argument ${picked.amount.arg + 1} is capped at ${picked.amount.max_per_tx} per call and ${picked.amount.max_per_day} per day (base units).` : ""}
+              {picked.payable ? "" : " Sends no ETH."}
+            </span>
+          ) : null}
+        </div>
+      );
+      break;
+    }
     case "list":
       input = <ListEditor value={value} onChange={set} groups={ctx.groups} placeholder="Column" />;
       break;

@@ -11,6 +11,7 @@ const NAV = [
   { href: "/app/flows/new", label: "New flow", match: (p: string) => p === "/app/flows/new" },
   { href: "/app/templates", label: "Templates", match: (p: string) => p.startsWith("/app/templates") },
   { href: "/app/connections", label: "Connections", match: (p: string) => p.startsWith("/app/connections") },
+  { href: "/app/onchain", label: "Onchain", match: (p: string) => p.startsWith("/app/onchain") },
   { href: "/app/settings", label: "Settings", match: (p: string) => p.startsWith("/app/settings") },
 ];
 

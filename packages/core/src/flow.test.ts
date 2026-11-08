@@ -12,7 +12,7 @@ describe("flowDefinitionSchema", () => {
   it("accepts a minimal flow and applies default settings", () => {
     const result = parse(base);
     expect(result.success).toBe(true);
-    expect(result.data?.settings).toEqual({ mode: "confirmed", max_runs_per_hour: 60 });
+    expect(result.data?.settings).toEqual({ mode: "confirmed", max_runs_per_hour: 60, onchain: false });
   });
 
   it("accepts nested all/any conditions", () => {

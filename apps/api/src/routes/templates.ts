@@ -167,6 +167,9 @@ export function registerTemplateRoutes(app: FastifyInstance, ctx: ApiContext): v
     const t = await resolveForUse(req.params.slug);
     if (!t) throw notFound("template");
     const body = parse(instantiateBody, req.body);
+    // Checked again on use: rules added after a template was published apply to it too.
+    const unusable = checkTemplate(t);
+    if (unusable.length > 0) throw new ApiError(422, "invalid_template", `this template cannot be used: ${unusable.join("; ")}`);
     const built = instantiateTemplate(t, body.values);
     if ("issues" in built) throw new ApiError(422, "invalid_values", "some template values are missing or invalid", { issues: built.issues });
     const created = await createFlow(ctx.flowDeps, { ownerId: me.userId, name: body.name ?? t.name, definition: built.definition, activate: body.activate });

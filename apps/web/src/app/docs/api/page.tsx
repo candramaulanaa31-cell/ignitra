@@ -4,7 +4,7 @@ import { EVALUATION_OUTCOMES, RUN_STATUSES } from "@ignitra/core";
 import { Code } from "@/lib/docs";
 import { SIWE_SIGN_IN } from "@/lib/api-snippets";
 
-export const metadata: Metadata = { title: "API", description: "Sign in with your wallet and manage flows, runs, connections and templates over HTTP." };
+export const metadata: Metadata = { title: "API", description: "Manage flows, runs, connections, templates and onchain grants over HTTP, with an API key or your wallet." };
 
 const WEB_URL = (process.env.WEB_URL ?? "http://localhost:3000").replace(/\/+$/, "");
 
@@ -19,6 +19,7 @@ const GROUPS: Array<{ title: string; note?: string; rows: Row[] }> = [
       ["GET", "/v1/templates?category=", "Template gallery (official and public community templates)"],
       ["GET", "/v1/templates/:slug", "One template: placeholders, definition and outline"],
       ["POST", "/v1/hooks/:flow_id/:token", "Inbound webhook: see Webhooks"],
+      ["POST", "/v1/integrations/vigil/:connection_id", "VIGIL alert deliveries, signed by VIGIL: see Integrations"],
     ],
   },
   {
@@ -27,6 +28,15 @@ const GROUPS: Array<{ title: string; note?: string; rows: Row[] }> = [
       ["GET", "/v1/auth/nonce", "A single-use nonce (10 minutes), the accepted domains and the chain id"],
       ["POST", "/v1/auth/verify", "{ message, signature, return_token? }: starts a session"],
       ["POST", "/v1/auth/logout", "Ends the session"],
+    ],
+  },
+  {
+    title: "API keys",
+    note: "Managing keys needs a wallet session: a key can not create keys.",
+    rows: [
+      ["GET", "/v1/api-keys", "Your keys: name, prefix, rate, last use (never the key)"],
+      ["POST", "/v1/api-keys", "{ name }: a new key (Team plan), returned once as key"],
+      ["DELETE", "/v1/api-keys/:id", "Revokes a key at once"],
     ],
   },
   {
@@ -67,11 +77,23 @@ const GROUPS: Array<{ title: string; note?: string; rows: Row[] }> = [
     note: "Secrets go in and never come out: responses only carry labels and safe metadata.",
     rows: [
       ["GET", "/v1/connections", "Your connections"],
-      ["POST", "/v1/connections", '{ type: "telegram" | "webhook" | "email" | "http", … }: a webhook (or a signed http) connection returns its signing_secret once'],
-      ["POST", "/v1/connections/:id/verify", "{ code }: confirms an email address with the code sent to it"],
+      ["POST", "/v1/connections", '{ type: "telegram" | "webhook" | "email" | "http" | "vigil" | "mandate", … }: webhook, signed http and MANDATE connections return their signing_secret once; VIGIL ones their receiver_url'],
+      ["POST", "/v1/connections/:id/verify", "{ code }: confirms an email address; { webhook_secret }: the secret VIGIL showed for a receiver you registered yourself"],
       ["POST", "/v1/connections/:id/resend", "Sends a new email code"],
       ["POST", "/v1/connections/google/start", "Starts Google sign-in for Sheets; returns the URL to open"],
-      ["DELETE", "/v1/connections/:id", "Deletes a connection; refused (409 connection_in_use, with the flow ids) while a flow still sends through it"],
+      ["DELETE", "/v1/connections/:id", "Deletes a connection; refused (409 connection_in_use) while a flow sends through it or its trigger listens on it (flows), or while a pending or active grant must pass it (grants)"],
+    ],
+  },
+  {
+    title: "Onchain grants",
+    note: "Team plan. Creating and verifying a grant needs a wallet session; listing and revoking also work with an API key. See Onchain.",
+    rows: [
+      ["GET", "/v1/onchain/grants", "Your grants with their scope and status"],
+      ["POST", "/v1/onchain/grants", "{ label, safe, targets, max_value_per_tx, max_value_per_day, expires_at, mandate_connection_id? }: a pending grant and the Safe transaction that approves it"],
+      ["GET", "/v1/onchain/grants/:id", "One grant: the session key's gas balance, the Safe transaction while pending, recent actions"],
+      ["POST", "/v1/onchain/grants/:id/verify", "{ tx_hash }: proves the mined Safe transaction grants exactly this; the grant becomes active"],
+      ["POST", "/v1/onchain/grants/:id/revoke", "Stops it at once (the session key is deleted); answers the Safe transaction that also removes the role"],
+      ["GET", "/v1/onchain/actions?grant_id=&limit=", "Every onchain action with its status, MANDATE decision and transaction hash"],
     ],
   },
   {
@@ -104,7 +126,8 @@ export default function ApiPage() {
 
       <h2>Sign in</h2>
       <p>
-        There are no passwords or API keys: you sign a Sign-In with Ethereum (EIP-4361) message with your wallet. Signing is free, sends no transaction and needs no funds. Smart-contract wallets work too (ERC-1271).
+        Two ways in, both sent as <code>Authorization: Bearer …</code>. Scripts use an <strong>API key</strong> (<code>igk_…</code>, Team plan): create one under Settings and see <Link href="/docs/sdk">SDK &amp; API keys</Link>. On any plan, a{" "}
+        <strong>wallet session</strong> works too: you sign a Sign-In with Ethereum (EIP-4361) message. Signing is free, sends no transaction and needs no funds. Smart-contract wallets work too (ERC-1271).
       </p>
       <ol>
         <li>
@@ -127,7 +150,8 @@ export default function ApiPage() {
       <h2>Conventions</h2>
       <ul>
         <li>
-          Ids are prefixed: <code>fl_</code> flows, <code>run_</code> runs, <code>conn_</code> connections, <code>usr_</code> users. Times are ISO-8601 UTC; addresses are lowercase.
+          Ids are prefixed: <code>fl_</code> flows, <code>run_</code> runs, <code>conn_</code> connections, <code>usr_</code> users, <code>key_</code> API keys, <code>grt_</code> onchain grants, <code>oca_</code> onchain actions. Times are
+          ISO-8601 UTC; addresses are lowercase.
         </li>
         <li>
           Results come wrapped in <code>data</code> (the sign-in endpoints answer flat). Runs page backwards: pass the response&apos;s <code>next_before</code> as <code>before</code> until it is null.
@@ -169,7 +193,7 @@ export default function ApiPage() {
           <tr>
             <td className="mono">429</td>
             <td className="small">
-              Rate limited: wait for <code>Retry-After</code> seconds.
+              Rate limited: wait for <code>Retry-After</code> seconds. Every answer carries <code>RateLimit-Limit</code>, <code>-Remaining</code> and <code>-Reset</code> (<Link href="/docs/sdk">limits</Link>).
             </td>
           </tr>
         </tbody>

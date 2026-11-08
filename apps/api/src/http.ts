@@ -89,6 +89,70 @@ export class RateLimiter {
   }
 }
 
+/**
+ * Token buckets per caller (API key, signed-in user, or client address for public routes),
+ * refilled continuously, with `RateLimit-Limit / -Remaining / -Reset` on every answer and
+ * `Retry-After` on a 429. In memory, per API process: N processes allow up to N× the rate.
+ */
+/** Failed deliveries (unknown hook or connection, bad token or signature) per sender address. */
+export const RECEIVER_MISSES_PER_MINUTE = 120;
+
+export class CallerLimiter {
+  readonly #now: () => number;
+  readonly #buckets = new Map<string, { tokens: number; at: number; rate: number }>();
+
+  constructor(now: () => number = Date.now) {
+    this.#now = now;
+  }
+
+  #bucket(key: string, perMinute: number): { tokens: number; at: number; rate: number } {
+    const now = this.#now();
+    if (this.#buckets.size > 100_000) {
+      // Drop buckets that have refilled completely: they carry no state.
+      for (const [k, b] of this.#buckets) if (b.tokens + ((now - b.at) / 60_000) * b.rate >= b.rate) this.#buckets.delete(k);
+    }
+    const b = this.#buckets.get(key) ?? { tokens: perMinute, at: now, rate: perMinute };
+    b.tokens = Math.min(perMinute, b.tokens + ((now - b.at) / 60_000) * perMinute);
+    b.at = now;
+    b.rate = perMinute;
+    this.#buckets.set(key, b);
+    return b;
+  }
+
+  /**
+   * A failure budget: `ensure` refuses (429) once `key` has spent it, and only `spend` uses it up.
+   * Receivers charge unknown ids and bad signatures this way, so scanners are bounded while
+   * genuine deliveries (one sender IP may serve many users) never are.
+   */
+  ensure(key: string, perMinute: number, reply: FastifyReply): void {
+    const b = this.#bucket(key, perMinute);
+    if (b.tokens >= 1) return;
+    const wait = Math.max(1, Math.ceil(((1 - b.tokens) / perMinute) * 60));
+    reply.header("retry-after", String(wait));
+    throw new ApiError(429, "rate_limited", `too many failed requests from this address; retry in ${wait} s`);
+  }
+
+  spend(key: string, perMinute: number): void {
+    const b = this.#bucket(key, perMinute);
+    b.tokens = Math.max(0, b.tokens - 1);
+  }
+
+  enforce(key: string, perMinute: number, reply: FastifyReply): void {
+    const b = this.#bucket(key, perMinute);
+    reply.header("ratelimit-limit", String(perMinute));
+    if (b.tokens < 1) {
+      const wait = Math.max(1, Math.ceil(((1 - b.tokens) / perMinute) * 60));
+      reply.header("ratelimit-remaining", "0");
+      reply.header("ratelimit-reset", String(wait));
+      reply.header("retry-after", String(wait));
+      throw new ApiError(429, "rate_limited", `rate limit of ${perMinute} requests per minute reached; retry in ${wait} s`);
+    }
+    b.tokens -= 1;
+    reply.header("ratelimit-remaining", String(Math.floor(b.tokens)));
+    reply.header("ratelimit-reset", String(Math.ceil(((perMinute - b.tokens) / perMinute) * 60)));
+  }
+}
+
 export function enforceRate(limiter: RateLimiter, key: string, reply: FastifyReply, what: string): void {
   const wait = limiter.take(key);
   if (wait > 0) {

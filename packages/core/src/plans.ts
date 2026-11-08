@@ -7,7 +7,9 @@ import type { ActionType, Plan, TriggerType } from "./catalog";
  *   overage       — over the monthly limit: keep running and meter (paid) or stop (free)
  *   minScheduleMinutes — shortest interval a SCHEDULE trigger may fire at
  *   lockedTriggers / lockedActions — features of higher plans (spec §10: Builder adds
- *                  Sheets, email and schedule)
+ *                  Sheets, email and schedule; Team adds onchain actions)
+ *   apiKeys       — long-lived API keys for the public API and the SDK (spec §10: Team "+ API").
+ *                  Wallet sessions (SIWE) work on every plan.
  */
 export interface PlanLimits {
   readonly activeFlows: number | null;
@@ -16,12 +18,13 @@ export interface PlanLimits {
   readonly minScheduleMinutes: number;
   readonly lockedTriggers: readonly TriggerType[];
   readonly lockedActions: readonly ActionType[];
+  readonly apiKeys: boolean;
 }
 
 export const PLAN_LIMITS: Readonly<Record<Plan, PlanLimits>> = {
-  free: { activeFlows: 3, runsPerMonth: 500, overage: false, minScheduleMinutes: 15, lockedTriggers: ["SCHEDULE"], lockedActions: ["EMAIL", "GOOGLE_SHEETS"] },
-  builder: { activeFlows: 20, runsPerMonth: 10_000, overage: true, minScheduleMinutes: 1, lockedTriggers: [], lockedActions: [] },
-  team: { activeFlows: null, runsPerMonth: 100_000, overage: true, minScheduleMinutes: 1, lockedTriggers: [], lockedActions: [] },
+  free: { activeFlows: 3, runsPerMonth: 500, overage: false, minScheduleMinutes: 15, lockedTriggers: ["SCHEDULE"], lockedActions: ["EMAIL", "GOOGLE_SHEETS", "ONCHAIN_TX"], apiKeys: false },
+  builder: { activeFlows: 20, runsPerMonth: 10_000, overage: true, minScheduleMinutes: 1, lockedTriggers: [], lockedActions: ["ONCHAIN_TX"], apiKeys: false },
+  team: { activeFlows: null, runsPerMonth: 100_000, overage: true, minScheduleMinutes: 1, lockedTriggers: [], lockedActions: [], apiKeys: true },
 };
 
 /** The cheapest plan that unlocks a trigger or action type (for upgrade hints). */

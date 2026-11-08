@@ -12,3 +12,4 @@ export * from "./matcher/admission";
 export * from "./matcher/matcher";
 export * from "./matcher/store";
 export * from "./matcher/runtime";
+export * from "./enrich/trust";

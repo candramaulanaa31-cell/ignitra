@@ -68,7 +68,7 @@ export interface StoredDefinition {
   trigger: { type: string; params: Record<string, unknown> };
   conditions?: FlowDefinitionInput["conditions"];
   actions: Array<{ step_id: string; type: string; params: Record<string, unknown> }>;
-  settings: { mode: "confirmed" | "fast"; max_runs_per_hour: number };
+  settings: { mode: "confirmed" | "fast"; max_runs_per_hour: number; onchain?: boolean };
 }
 
 export interface FlowDetail extends FlowSummary {
@@ -139,7 +139,7 @@ export interface Evaluation {
 
 export interface Connection {
   id: string;
-  type: "telegram" | "webhook" | "email" | "google" | "http" | "discord";
+  type: "telegram" | "webhook" | "email" | "google" | "http" | "discord" | "vigil" | "mandate";
   label: string;
   metadata: Record<string, unknown>;
   created_at: string;
@@ -205,4 +205,90 @@ export interface OwnerNotification {
   flow_id: string | null;
   message: string;
   created_at: string;
+}
+
+export interface ApiKey {
+  id: string;
+  name: string;
+  prefix: string;
+  rate_per_minute: number;
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+}
+
+// ---- onchain grants (Safe + Zodiac Roles) ----
+
+export interface ScopedFunctionView {
+  signature: string;
+  selector: string;
+  inputs: string[];
+  payable: boolean;
+  amount: { arg: number; max_per_tx: string; max_per_day: string } | null;
+}
+
+export type GrantStatus = "pending" | "active" | "revoked" | "expired";
+
+export interface Grant {
+  id: string;
+  label: string;
+  status: GrantStatus;
+  chain_id: number;
+  safe: string;
+  roles: string;
+  role_key: string;
+  session_key: string;
+  scope: { targets: Array<{ address: string; functions: ScopedFunctionView[] }>; max_value_per_tx: string; max_value_per_day: string; expires_at: string };
+  mandate_connection_id: string | null;
+  grant_tx_hash: string | null;
+  grant_tx_url: string | null;
+  expires_at: string;
+  created_at: string;
+  activated_at: string | null;
+  revoked_at: string | null;
+}
+
+export interface SafeCall {
+  to: string;
+  value: string;
+  data: string;
+  description: string;
+}
+
+/** A Safe transaction to approve, in every form an owner can use. */
+export interface SafeApproval {
+  calls: SafeCall[];
+  safe_transaction?: { to: string; value: string; data: string; operation: number };
+  /** 1-of-N owner: send it from the wallet as a normal transaction. */
+  owner_transaction?: { from: string; to: string; value: string; data: string } | null;
+  /** Safe{Wallet} Transaction Builder batch (import the JSON). */
+  tx_builder?: unknown;
+  note?: string;
+}
+
+export interface OnchainAction {
+  id: string;
+  grant_id: string;
+  flow_id: string;
+  run_id: string;
+  step_id: string;
+  test: boolean;
+  to: string;
+  function: string;
+  args: unknown[];
+  value: string;
+  status: "simulated" | "denied" | "signed" | "sent" | "confirmed" | "reverted" | "failed";
+  mandate: Record<string, unknown> | null;
+  tx_hash: string | null;
+  tx_url: string | null;
+  block_number: number | null;
+  gas_used: string | null;
+  error: string | null;
+  created_at: string;
+}
+
+export interface GrantDetail extends Grant {
+  session_key_balance: string | null;
+  approval: SafeApproval | null;
+  actions: OnchainAction[];
 }

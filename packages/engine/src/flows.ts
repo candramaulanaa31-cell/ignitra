@@ -1,3 +1,5 @@
+import { parseWriteFunction } from "@ignitra/chain";
+import { toFunctionSelector } from "viem";
 import { and, eq, ne, sql } from "drizzle-orm";
 import {
   evaluateConditions,
@@ -14,7 +16,7 @@ import {
   type FlowStatus,
   type Plan,
 } from "@ignitra/core";
-import { connections, flowVersions, flows, ownerNotifications, runs, triggerState, users, watches, type Database, type Run, type Tx } from "@ignitra/db";
+import { connections, onchainGrants, flowVersions, flows, ownerNotifications, runs, triggerState, users, watches, type Database, type Run, type Tx } from "@ignitra/db";
 import { ensureInboundHook } from "./hooks";
 import type { PrepareContext, TriggerModuleRegistry } from "./types";
 
@@ -93,6 +95,44 @@ export interface FlowServiceDeps {
 
 type ValidationDeps = Pick<FlowServiceDeps, "triggers" | "prepare"> & { readonly actions?: ActionRegistry | undefined; readonly db?: Database | undefined };
 
+/**
+ * ONCHAIN_TX is off by default (spec): the flow must opt in, run on confirmed events, and every
+ * step must stay inside a grant of the owner's that is not revoked or expired. The runner checks
+ * all of it again before signing, and the chain enforces the grant regardless.
+ */
+async function validateOnchainStep(def: FlowDefinition, params: Record<string, unknown>, at: string, deps: ValidationDeps, ownerId: string | undefined, issues: FlowIssue[]): Promise<void> {
+  if (def.settings.onchain !== true) issues.push({ path: "settings.onchain", message: "ONCHAIN_TX is off by default: opt in with settings.onchain = true" });
+  if (def.settings.mode !== "confirmed") issues.push({ path: "settings.mode", message: "ONCHAIN_TX runs on confirmed events only" });
+  const grantId = typeof params.grant_id === "string" ? params.grant_id : null;
+  if (!grantId || !deps.db || !ownerId) return;
+  const [grant] = await deps.db.select().from(onchainGrants).where(eq(onchainGrants.id, grantId));
+  if (!grant || grant.ownerId !== ownerId) {
+    issues.push({ path: `${at}.params.grant_id`, message: `grant ${grantId} not found` });
+    return;
+  }
+  if (grant.status === "revoked" || grant.status === "expired") {
+    issues.push({ path: `${at}.params.grant_id`, message: `grant ${grantId} is ${grant.status}` });
+    return;
+  }
+  const scope = grant.scope as { targets?: Array<{ address: string; functions: Array<{ selector: string; signature: string }> }> };
+  const to = typeof params.to === "string" ? normalizeAddress(params.to) : null;
+  const target = scope.targets?.find((t) => t.address === to);
+  if (!target) {
+    issues.push({ path: `${at}.params.to`, message: `${String(params.to)} is not in grant ${grantId}` });
+    return;
+  }
+  let selector: string | null = null;
+  try {
+    const sig = String(params.function);
+    selector = toFunctionSelector(parseWriteFunction(sig));
+  } catch {
+    selector = null;
+  }
+  if (!selector || !target.functions.some((f) => f.selector === selector)) {
+    issues.push({ path: `${at}.params.function`, message: `not in grant ${grantId}: allowed on ${target.address} are ${target.functions.map((f) => f.signature).join(", ")}` });
+  }
+}
+
 export async function validateFlowDefinition(input: unknown, deps: ValidationDeps, ownerId?: string): Promise<FlowDefinition> {
   const parsed = flowDefinitionSchema.safeParse(input);
   if (!parsed.success) {
@@ -142,6 +182,16 @@ export async function validateFlowDefinition(input: unknown, deps: ValidationDep
       });
     }
   }
+  if (module.connectionType) {
+    const connectionId = (params.data as { connection_id?: unknown }).connection_id;
+    if (typeof connectionId !== "string") {
+      issues.push({ path: "trigger.params.connection_id", message: `${def.trigger.type} needs a ${module.connectionType} connection` });
+    } else if (deps.db && ownerId) {
+      const [conn] = await deps.db.select({ ownerId: connections.ownerId, type: connections.type }).from(connections).where(eq(connections.id, connectionId));
+      if (!conn || conn.ownerId !== ownerId) issues.push({ path: "trigger.params.connection_id", message: `connection ${connectionId} not found` });
+      else if (conn.type !== module.connectionType) issues.push({ path: "trigger.params.connection_id", message: `connection ${connectionId} is ${conn.type}; ${def.trigger.type} needs ${module.connectionType}` });
+    }
+  }
   const triggerFields = module.fields(prepared);
   for (const issue of validateConditionFields(def.conditions, triggerFields)) {
     issues.push({ path: `conditions.${issue.path}`, message: issue.message });
@@ -177,6 +227,7 @@ async function validateActions(
       continue;
     }
     const params = parsed.data as Record<string, unknown>;
+    if (step.type === "ONCHAIN_TX") await validateOnchainStep(def, params, at, deps, ownerId, issues);
     const connectionId = typeof params.connection_id === "string" ? params.connection_id : null;
     if (action.connectionType && !connectionId && !action.connectionOptional) {
       issues.push({ path: `${at}.params.connection_id`, message: `${step.type} needs a ${action.connectionType} connection` });

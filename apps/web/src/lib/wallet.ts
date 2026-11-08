@@ -68,6 +68,25 @@ async function useRobinhoodChain(provider: Eip1193Provider): Promise<void> {
   }
 }
 
+/**
+ * Sends a transaction IGNITRA prepared (a Safe owner approving or revoking a grant) from the
+ * wallet, on Robinhood Chain. The wallet shows it in full before anything is signed.
+ */
+export async function sendWalletTransaction(provider: Eip1193Provider, tx: { from: string; to: string; value: string; data: string }): Promise<`0x${string}`> {
+  const accounts = (await provider.request({ method: "eth_requestAccounts" })) as string[];
+  const from = accounts.find((a) => a.toLowerCase() === tx.from.toLowerCase());
+  if (!from) throw new Error(`switch the wallet to ${getAddress(tx.from)}: the Safe owner you signed in with`);
+  await useRobinhoodChain(provider);
+  const chainId = Number(BigInt((await provider.request({ method: "eth_chainId" })) as string));
+  if (chainId !== ROBINHOOD_CHAIN_ID) throw new Error("switch the wallet to Robinhood Chain first");
+  try {
+    return (await provider.request({ method: "eth_sendTransaction", params: [{ from, to: tx.to, value: toHex(BigInt(tx.value)), data: tx.data }] })) as `0x${string}`;
+  } catch (err) {
+    if ((err as { code?: number }).code === 4001) throw new Error("the transaction was rejected in the wallet");
+    throw err;
+  }
+}
+
 export class SignInCancelled extends Error {
   constructor() {
     super("signature request was cancelled in the wallet");

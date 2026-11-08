@@ -1,12 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
 import { subscribePush } from "@/components/service-worker";
 import { useSession } from "@/components/session";
 import { CopyButton, Empty, Field, Notice, useToast } from "@/components/ui";
 import { api, errorText, useApi } from "@/lib/api";
 import { ago, when } from "@/lib/format";
-import type { OwnerNotification } from "@/lib/types";
+import type { ApiKey, OwnerNotification } from "@/lib/types";
 
 interface Device {
   id: string;
@@ -15,6 +15,122 @@ interface Device {
   created_at: string;
   last_success_at: string | null;
   disabled_at: string | null;
+}
+
+/** Keys for scripts and @ignitra/sdk. Only a hash is stored: the key is shown once. */
+function ApiKeys({ notify }: { notify: (message: string, kind?: "ok" | "error" | "info") => void }) {
+  const { me } = useSession();
+  const keys = useApi<{ data: ApiKey[] }>("/v1/api-keys");
+  const [name, setName] = useState("");
+  const [created, setCreated] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const team = me.plan === "team";
+
+  const create = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      const res = await api<{ data: ApiKey; key: string }>("/v1/api-keys", { body: { name: name.trim() } });
+      setCreated(res.key);
+      setName("");
+      await keys.reload();
+    } catch (err) {
+      notify(errorText(err), "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const revoke = async (k: ApiKey) => {
+    if (!window.confirm(`Revoke "${k.name}"? Anything using it stops working at once.`)) return;
+    try {
+      await api(`/v1/api-keys/${k.id}`, { method: "DELETE" });
+      await keys.reload();
+      notify("Key revoked.");
+    } catch (err) {
+      notify(errorText(err), "error");
+    }
+  };
+
+  return (
+    <section className="card">
+      <div className="card-head">
+        <span className="label">API keys</span>
+        <a href="/docs/sdk" className="small">
+          SDK &amp; API docs
+        </a>
+      </div>
+      <div className="card-body stack">
+        <p className="small muted">
+          For scripts and <span className="mono">@ignitra/sdk</span>: <span className="mono">Authorization: Bearer igk_…</span>. A key acts as you, except that creating keys and onchain grants always needs your wallet. Only its hash is stored, so copy it when it is shown.
+        </p>
+        {team ? (
+          <form className="row" onSubmit={(e) => void create(e)}>
+            <input className="grow" placeholder="What it is for, e.g. ci-deploy" maxLength={80} value={name} onChange={(e) => setName(e.target.value)} />
+            <button type="submit" className="btn primary" disabled={busy || name.trim().length === 0}>
+              {busy ? "Creating…" : "Create key"}
+            </button>
+          </form>
+        ) : (
+          <Notice kind="info">API keys are part of the Team plan. Your wallet session works with the API on every plan.</Notice>
+        )}
+        {created ? (
+          <Notice kind="warn">
+            <div className="stack" style={{ gap: 6 }}>
+              <strong>Your new key: copy it now. It is not shown again.</strong>
+              <div className="row">
+                <code className="grow" style={{ overflowWrap: "anywhere" }}>
+                  {created}
+                </code>
+                <CopyButton value={created} />
+              </div>
+              <button type="button" className="linkish small" onClick={() => setCreated(null)}>
+                I stored it
+              </button>
+            </div>
+          </Notice>
+        ) : null}
+        {(keys.data?.data.length ?? 0) === 0 ? null : (
+          <table className="table responsive">
+            <thead>
+              <tr>
+                <th>Key</th>
+                <th>Last used</th>
+                <th>Created</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {keys.data?.data.map((k) => (
+                <tr key={k.id} className={k.revoked_at ? "faint" : undefined}>
+                  <td>
+                    {k.name}
+                    <div className="mono small faint">
+                      {k.prefix}… · {k.rate_per_minute}/min
+                    </div>
+                  </td>
+                  <td data-label="last used" className="small muted">
+                    {k.last_used_at ? ago(k.last_used_at, Date.now(), me.timezone) : "never"}
+                  </td>
+                  <td data-label="created" className="small muted nowrap">
+                    {when(k.created_at, me.timezone).slice(0, 16)}
+                  </td>
+                  <td className="right">
+                    {k.revoked_at ? (
+                      <span className="small faint">revoked</span>
+                    ) : (
+                      <button type="button" className="btn sm ghost danger" onClick={() => void revoke(k)}>
+                        Revoke
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </section>
+  );
 }
 
 const ZONES = ["Asia/Jakarta", "Asia/Makassar", "Asia/Jayapura", "Asia/Singapore", "UTC", "Europe/London", "America/New_York"];
@@ -181,6 +297,8 @@ export default function SettingsPage() {
           )}
         </div>
       </section>
+
+      <ApiKeys notify={notify} />
 
       <section className="card">
         <div className="card-head">

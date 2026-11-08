@@ -6,3 +6,4 @@ export * from "./multicall";
 export * from "./rpc";
 export * from "./types";
 export * from "./ws";
+export * from "./writer";

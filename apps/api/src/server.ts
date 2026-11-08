@@ -1,16 +1,19 @@
 import Fastify, { type FastifyBaseLogger, type FastifyError } from "fastify";
-import type { ActionRegistry, ChainConfig, SafeHttpClient } from "@ignitra/core";
+import type { ActionRegistry, ChainConfig, ChainTxClient, SafeHttpClient } from "@ignitra/core";
 import type { Keyring, Logger } from "@ignitra/core/server";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import type { AbiRegistry, ChainReader } from "@ignitra/chain";
-import { FlowNotFoundError, FlowValidationError, PlanLimitError, TokenInfo, createTriggerModules, type TriggerModuleRegistry } from "@ignitra/engine";
+import { FlowNotFoundError, FlowValidationError, PlanLimitError, TokenInfo, createTriggerModules, type TriggerModuleRegistry, type TrustLookup } from "@ignitra/engine";
 import { createActionModules, createSafeHttp, type EmailConfig, type GoogleConfig } from "@ignitra/actions";
 import { planFor } from "@ignitra/core";
 import { chainSyncStatus, type DbHandle } from "@ignitra/db";
 import { authenticate, type AuthOptions } from "./auth";
 import type { ApiContext } from "./context";
-import { ApiError } from "./http";
+import { ApiError, CallerLimiter } from "./http";
+import { registerApiKeyRoutes } from "./routes/api-keys";
+import { registerIntegrationRoutes } from "./routes/integrations";
+import { registerOnchainRoutes } from "./routes/onchain";
 import { registerAccountRoutes } from "./routes/account";
 import { registerAuthRoutes } from "./routes/auth";
 import { registerBuilderRoutes } from "./routes/builder";
@@ -48,6 +51,18 @@ export interface ServerDeps {
   readonly telegramApiBase?: string;
   readonly inboundRatePerMinute?: number;
   readonly inboundDailyLimit?: number;
+  /** Default VIGIL API for VIGIL connections. */
+  readonly vigilApiUrl?: string | null;
+  /** Chain reads / receipts for onchain grants. */
+  readonly chainTx?: ChainTxClient | null;
+  /** Every onchain grant must name a MANDATE policy (default true, as the spec requires). */
+  readonly mandateRequired?: boolean;
+  /** TRUST LAYER scores for samples and test runs (null: not configured). */
+  readonly trust?: TrustLookup | null;
+  /** Anonymous requests per client address and minute (public routes). */
+  readonly publicRatePerMinute?: number;
+  /** Requests per signed-in user and minute (API keys carry their own rate). */
+  readonly sessionRatePerMinute?: number;
   /** Behind a reverse proxy: take the client IP from X-Forwarded-For (true, or the proxy addresses). */
   readonly trustProxy?: boolean | string[];
   readonly email?: EmailConfig | null;
@@ -195,6 +210,12 @@ function context(deps: ServerDeps, triggers: TriggerModuleRegistry, actions: Act
     vapidPublicKey: deps.vapidPublicKey ?? null,
     onInboundEvent: deps.onInboundEvent ?? (() => {}),
     now: deps.now ?? Date.now,
+    limiter: new CallerLimiter(deps.now ?? Date.now),
+    trust: deps.trust ?? null,
+    vigilApiUrl: deps.vigilApiUrl ?? null,
+    chainTx: deps.chainTx ?? null,
+    mandateRequired: deps.mandateRequired ?? true,
+    rates: { publicPerMinute: deps.publicRatePerMinute ?? 300, sessionPerMinute: deps.sessionRatePerMinute ?? 600 },
   };
 }
 
@@ -278,20 +299,34 @@ export async function buildServer(deps: ServerDeps) {
     });
   });
 
-  const triggersJson = triggerCatalog(triggers);
-  app.get("/v1/triggers", async () => ({ data: triggersJson }));
-  const actionsJson = actionCatalog(actions);
-  app.get("/v1/actions", async () => ({ data: actionsJson }));
-  app.get("/v1/push/vapid-public-key", async () => ({ public_key: ctx.vapidPublicKey }));
-
-  registerAuthRoutes(app, ctx);
+  // Inbound hooks and integration receivers carry their own limits.
   registerHookRoutes(app, ctx);
-  registerGoogleCallback(app, ctx);
-  registerPublicTemplateRoutes(app, ctx);
-  registerDemoRoutes(app, ctx);
+  registerIntegrationRoutes(app, ctx);
+
+  // Public routes: limited per client address (behind a proxy, set TRUST_PROXY so this is the visitor).
+  await app.register(async (pub) => {
+    pub.addHook("onRequest", async (req, reply) => {
+      // The landing page's live demo polls a 5-second cache: its own budget, so busy shared
+      // addresses never starve sign-in or the template gallery (and the other way round).
+      if (req.routeOptions.url === "/v1/demo") ctx.limiter.enforce(`ip-demo:${req.ip}`, ctx.rates.publicPerMinute * 4, reply);
+      else ctx.limiter.enforce(`ip:${req.ip}`, ctx.rates.publicPerMinute, reply);
+    });
+    const triggersJson = triggerCatalog(triggers);
+    pub.get("/v1/triggers", async () => ({ data: triggersJson }));
+    const actionsJson = actionCatalog(actions);
+    pub.get("/v1/actions", async () => ({ data: actionsJson }));
+    pub.get("/v1/push/vapid-public-key", async () => ({ public_key: ctx.vapidPublicKey }));
+    registerAuthRoutes(pub, ctx);
+    registerGoogleCallback(pub, ctx);
+    registerPublicTemplateRoutes(pub, ctx);
+    registerDemoRoutes(pub, ctx);
+  });
+
   await app.register(async (scope) => {
-    scope.addHook("onRequest", authenticate({ db: ctx.db, corsOrigins: ctx.corsOrigins, now: ctx.now }));
+    scope.addHook("onRequest", authenticate({ db: ctx.db, corsOrigins: ctx.corsOrigins, now: ctx.now, limiter: ctx.limiter, sessionPerMinute: ctx.rates.sessionPerMinute }));
     registerAccountRoutes(scope, ctx);
+    registerApiKeyRoutes(scope, ctx);
+    registerOnchainRoutes(scope, ctx);
     registerConnectionRoutes(scope, ctx);
     registerFlowRoutes(scope, ctx);
     registerBuilderRoutes(scope, ctx);

@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { redactUrl } from "@ignitra/core";
 import { chainConfigFromEnv, closeServer, createLogger, loadServiceEnv, runService, startHealthServer } from "@ignitra/core/server";
 import { createRunnerFromEnv, type RunnerRuntime } from "@ignitra/actions";
-import { createApiFromEnv } from "@ignitra/api";
+import { createApiFromEnv, trustFromEnv } from "@ignitra/api";
 import { AbiRegistry, BlockscoutAbiFetcher, EventDecoder, createRpcChainReader } from "@ignitra/chain";
 import { createDb } from "@ignitra/db";
 import { Matcher, MatcherRuntime, TokenInfo, createTriggerModules } from "@ignitra/engine";
@@ -59,6 +59,7 @@ await runService(logger, async () => {
       triggers: createTriggerModules(),
       logger: logger.child({ component: "matcher" }),
       owner,
+      trust: trustFromEnv(env),
       options: {
         batchSize: env.MATCHER_BATCH_SIZE,
         pollIntervalMs: env.MATCHER_POLL_TRIGGERS_MS,
