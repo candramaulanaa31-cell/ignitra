@@ -14,6 +14,7 @@ import {
   flowEvaluations,
   flowStats,
   flows,
+  inboundEvents,
   leases,
   runs,
   users,
@@ -69,7 +70,7 @@ interface Pipeline {
   confirm(n?: number): Promise<void>;
 }
 
-async function pipeline(opts: { stateWindow?: number; trust?: TrustLookup } = {}): Promise<Pipeline> {
+async function pipeline(opts: { stateWindow?: number; trust?: TrustLookup; flowsCacheMs?: number } = {}): Promise<Pipeline> {
   let clockOffset = 0;
   // logTimestamps: false mirrors Robinhood Chain's RPC, whose logs carry blockTimestamp "0x0".
   const chain = new FakeChain({ logTimestamps: false, timestampOf: () => Math.floor(Date.now() / 1000) + clockOffset, ...(opts.stateWindow ? { stateWindow: opts.stateWindow } : {}) });
@@ -92,7 +93,7 @@ async function pipeline(opts: { stateWindow?: number; trust?: TrustLookup } = {}
     triggers,
     logger: silent,
     owner: "matcher-test",
-    options: { pollIntervalMs: 0, flowsCacheMs: 0, evaluationsPerMinute: 10_000 },
+    options: { pollIntervalMs: 0, flowsCacheMs: opts.flowsCacheMs ?? 0, evaluationsPerMinute: 10_000 },
     ...(opts.trust ? { trust: opts.trust } : {}),
   });
   const p: Pipeline = {
@@ -185,6 +186,26 @@ describe("events → queued runs", () => {
     p.chain.mine([p.token.transfer(WHALE, CAROL, 2n)]);
     await p.confirm();
     expect((await allRuns()).map((r) => (r.triggerEvent as { to: string }).to)).toEqual([CAROL]);
+  });
+});
+
+describe("flows activated a moment ago", () => {
+  it("never loses an event or request that arrives while the matcher's flow index is cached", async () => {
+    // The index was loaded (empty) during setup and stays cached for the whole test.
+    const p = await pipeline({ flowsCacheMs: 60_000 });
+    const confirmed = await flow(p, { trigger: { type: "TOKEN_TRANSFER", params: { token: TOKEN } } }, "confirmed");
+    const fast = await flow(p, { trigger: { type: "TOKEN_TRANSFER", params: { token: TOKEN } }, settings: { mode: "fast" } }, "fast");
+    p.chain.mine([p.token.transfer(WHALE, BOB, 5n)]);
+    await p.confirm();
+    const byFlow = async (id: string) => (await allRuns()).filter((r) => r.flowId === id);
+    expect(await byFlow(fast)).toHaveLength(1);
+    expect(await byFlow(confirmed)).toHaveLength(1);
+
+    // A request sent right after its flow was created (an SDK client does exactly this).
+    const hook = await flow(p, { trigger: { type: "INBOUND_WEBHOOK", params: {} } }, "hook");
+    await h.db.insert(inboundEvents).values({ requestId: "req_fresh", flowId: hook, dedupeKey: "k-fresh", body: { order: "A-1" }, bytes: 15 });
+    await p.matcher.tick();
+    expect(await byFlow(hook)).toHaveLength(1);
   });
 });
 
