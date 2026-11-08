@@ -71,6 +71,11 @@ export class MatcherRuntime {
     }
   }
 
+  /** On a graceful stop: hand the lease over at once instead of when it expires (a restart would otherwise create no runs for up to the lease's TTL). */
+  async release(): Promise<void> {
+    await this.#matcher.store.lease.release();
+  }
+
   health(): MatcherHealth {
     const r = this.#last;
     const fresh = this.#lastOkAt !== null && Date.now() - this.#lastOkAt < Math.max(10 * this.#intervalMs, 30_000);

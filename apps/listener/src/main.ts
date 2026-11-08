@@ -184,6 +184,7 @@ await runService(logger, async () => {
     await abis?.idle();
     await api?.abis.idle();
     await store?.releaseLease().catch(() => {});
+    await matcherRuntime?.release().catch(() => {});
     await closeServer(server);
     await db.close();
   };

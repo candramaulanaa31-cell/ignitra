@@ -21,7 +21,7 @@ import {
   watches,
   type DbHandle,
 } from "@ignitra/db";
-import { Matcher, TokenInfo, createFlow, createTriggerModules, ensureUser, setFlowStatus, type FlowServiceDeps, type TrustLookup } from "@ignitra/engine";
+import { Matcher, MatcherRuntime, TokenInfo, createFlow, createTriggerModules, ensureUser, setFlowStatus, type FlowServiceDeps, type TrustLookup } from "@ignitra/engine";
 import { ListenerStore } from "./store";
 import { ChainSync } from "./sync";
 
@@ -206,6 +206,16 @@ describe("flows activated a moment ago", () => {
     await h.db.insert(inboundEvents).values({ requestId: "req_fresh", flowId: hook, dedupeKey: "k-fresh", body: { order: "A-1" }, bytes: 15 });
     await p.matcher.tick();
     expect(await byFlow(hook)).toHaveLength(1);
+  });
+});
+
+describe("restarts", () => {
+  it("hands the matcher lease over at once on a graceful stop, so a restart keeps creating runs", async () => {
+    const p = await pipeline(); // its matcher holds the lease
+    const next = new Matcher({ db: h.db, chain: chainConfig, reader: p.chain, tokens: new TokenInfo(p.chain), triggers: createTriggerModules(), logger: silent, owner: "matcher-next", options: { flowsCacheMs: 0 } });
+    expect((await next.tick()).role).toBe("standby");
+    await new MatcherRuntime({ matcher: p.matcher, logger: silent }).release();
+    expect((await next.tick()).role).toBe("leader");
   });
 });
 
