@@ -9,6 +9,10 @@ import {
   chainEvents,
   chainSyncStatus,
   createDb,
+  exportToFile,
+  importDatabase,
+  openBackupFile,
+  verifyBackup,
   flowEvaluations,
   flowStats,
   flowVersions,
@@ -52,12 +56,15 @@ import { DbAbiStore, ListenerStore, addWatch } from "./store";
  *   runs [--flow <id>] [--limit n]          queued/finished runs with condition traces
  *   evals --flow <id> [--limit n]            why matching events did NOT run
  *   metrics [--prometheus]                   listener lag, gap detector, RPC errors, queue, latency, outcomes
- *
- * Keys
- *   keys status                              stored secrets per encryption key id
- *   keys rewrap [--dry-run]                  wrap every secret's data key with the active ENCRYPTION_KEY
  *   dead-letters [--owner 0x…] [--limit n]   runs whose steps failed for good
  *   run retry <run id>                       run those steps again (delivered steps are not repeated)
+ *
+ * Keys and backups
+ *   keys status                              stored secrets per encryption key id
+ *   keys rewrap [--dry-run]                  wrap every secret's data key with the active ENCRYPTION_KEY
+ *   db export <file[.gz]>                    consistent snapshot of every table (secrets stay encrypted)
+ *   db verify <file>                         check a backup's structure and checksum, no database writes
+ *   db import <file>                         restore into an EMPTY database at the same schema version
  *
  * Accounts
  *   user plan <wallet> <free|builder|team>   (no billing yet: operators set plans)
@@ -80,6 +87,7 @@ const USAGE = `usage: pnpm ops <command>
   evals --flow <id> [--limit n]
   dead-letters [--owner 0x..] [--limit n] | run retry <run-id> | metrics [--prometheus]
   keys status | keys rewrap [--dry-run]
+  db export <file[.gz]> | db verify <file> | db import <file>
   user plan <wallet> <free|builder|team> | usage [--owner 0x..]
   template list | template hide <slug> | template unhide <slug>
   demo setup <wallet> [--token 0x..] [--min 1000]
@@ -379,6 +387,24 @@ try {
       console.log(JSON.stringify({ dry_run: values["dry-run"], ...report }, null, 2));
       if (report.failed.length > 0) process.exitCode = 2;
     }
+  } else if (cmd === "db" && (sub === "export" || sub === "verify" || sub === "import")) {
+    const [file] = rest;
+    if (!file) throw new Error(USAGE);
+    let summary;
+    if (sub === "export") {
+      summary = await exportToFile(db, file);
+    } else if (sub === "verify") {
+      summary = await verifyBackup(openBackupFile(file));
+    } else {
+      // A fresh Postgres needs the schema first (PGlite was migrated on open). Everything else is
+      // checked inside the restore's transaction: same schema version, every table empty.
+      if (handle.driver === "pg") await handle.migrate();
+      summary = await importDatabase(db, openBackupFile(file));
+    }
+    const { tables, ...rest_ } = summary;
+    console.log(JSON.stringify({ file, [sub === "export" ? "written" : sub === "verify" ? "verified" : "restored"]: true, ...rest_, tables }, null, 2));
+    if (sub === "export") console.log("holds account data (secrets stay encrypted): store it like the database, and keep ENCRYPTION_KEY elsewhere");
+    if (sub === "import") console.log("restored: start the services; restore needs the same ENCRYPTION_KEY (or it in ENCRYPTION_KEYS_PREVIOUS)");
   } else if (cmd === "metrics") {
     // What /metrics serves, readable (or --prometheus for the exposition text).
     const m = await collectMetrics(db, chainId);

@@ -96,6 +96,8 @@ const GROUPS: Array<{ title: string; note?: string; rows: Row[] }> = [
       ["GET", "/v1/onchain/grants/:id", "One grant: the session key's gas balance, the Safe transaction while pending, recent actions"],
       ["POST", "/v1/onchain/grants/:id/verify", "{ tx_hash }: proves the mined Safe transaction grants exactly this; the grant becomes active"],
       ["POST", "/v1/onchain/grants/:id/revoke", "Stops it at once (the session key is deleted); answers the Safe transaction that also removes the role"],
+      ["GET", "/v1/onchain/review", "Every grant that can still act: what it allows, the flows using it, its last 7 days, and findings (unused, stale, no MANDATE, expiring)"],
+      ["POST", "/v1/onchain/grants/revoke-all", "Emergency stop: revokes every live grant at once (session keys deleted); answers one optional Safe transaction per Safe that removes the roles"],
       ["GET", "/v1/onchain/actions?grant_id=&limit=", "Every onchain action with its status, MANDATE decision and transaction hash"],
     ],
   },

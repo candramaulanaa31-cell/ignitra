@@ -1,9 +1,9 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, count, desc, eq, gte, inArray, max } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { encodeFunctionData, formatEther, type Hex } from "viem";
 import { z } from "zod";
 import { normalizeAddress, planLimits, type ChainTxClient, type NormalizedAddress } from "@ignitra/core";
-import { onchainActions, onchainGrants, type OnchainActionRow, type OnchainGrantRow } from "@ignitra/db";
+import { flowVersions, flows, onchainActions, onchainGrants, type Database, type OnchainActionRow, type OnchainGrantRow } from "@ignitra/db";
 import {
   SAFE_ABI,
   activateGrant,
@@ -37,6 +37,8 @@ import { ApiError, RateLimiter, clampLimit, enforceRate, iso, notFound, parse } 
  *   GET  /v1/onchain/grants                list
  *   POST /v1/onchain/grants                create (wallet session, Team plan) → the Safe transaction to approve
  *   GET  /v1/onchain/grants/:id            one grant, its session key's gas balance, recent actions
+ *   GET  /v1/onchain/review                every grant that can still act: what it allows, which flows use it, what to fix
+ *   POST /v1/onchain/grants/revoke-all     revoke every live grant now (keys wiped) → per Safe, the transaction removing the roles
  *   POST /v1/onchain/grants/:id/verify     { tx_hash } → active, once the transaction is proven
  *   POST /v1/onchain/grants/:id/revoke     revoke now (key wiped) → the Safe transaction that removes the role
  *   GET  /v1/onchain/actions               every onchain action, with its transaction
@@ -128,6 +130,63 @@ function approvalOptions(calls: readonly PlannedCall[], ctx: ApiContext, safe: N
   };
 }
 
+const DAY = 86_400_000;
+
+export interface ReviewFinding {
+  readonly level: "warn" | "info";
+  readonly code: "pending_stale" | "unused" | "idle" | "no_mandate" | "expires_soon" | "sends_eth";
+  readonly message: string;
+}
+
+/** What a person reviewing a live grant should know or fix, warnings first. */
+export function reviewFindings(
+  g: Pick<OnchainGrantRow, "status" | "createdAt" | "activatedAt" | "expiresAt" | "mandateConnectionId">,
+  scope: GrantScope,
+  usedBy: ReadonlyArray<{ status: string }>,
+  lastActionAt: Date | null,
+  now: number,
+): ReviewFinding[] {
+  const out: ReviewFinding[] = [];
+  if (g.status === "pending" && now - g.createdAt.getTime() > DAY) {
+    out.push({ level: "warn", code: "pending_stale", message: "Waiting for your Safe's approval for over a day: revoke it if you will not approve it." });
+  }
+  if (g.status === "active" && !usedBy.some((f) => f.status === "active")) {
+    out.push({ level: "warn", code: "unused", message: "No active flow uses this grant. Revoke it unless you need it soon: an unused permission is only risk." });
+  }
+  const since = lastActionAt ?? g.activatedAt;
+  if (g.status === "active" && since && now - since.getTime() > 30 * DAY) {
+    out.push({ level: "info", code: "idle", message: lastActionAt ? "No transaction through it in 30 days." : "Never used in the 30 days since it became active." });
+  }
+  if (!g.mandateConnectionId) out.push({ level: "info", code: "no_mandate", message: "No MANDATE policy: only the onchain limits stand between a flow and a transaction." });
+  const left = g.expiresAt.getTime() - now;
+  if (left < DAY) out.push({ level: "info", code: "expires_soon", message: `Expires in ${Math.max(1, Math.round(left / 3_600_000))} h: flows using it stop then.` });
+  if (BigInt(scope.max_value_per_day_wei) > 0n) out.push({ level: "info", code: "sends_eth", message: `Can send up to ${formatEther(BigInt(scope.max_value_per_day_wei))} ETH a day from the Safe.` });
+  return out.sort((a, b) => (a.level === b.level ? 0 : a.level === "warn" ? -1 : 1));
+}
+
+/** Flows whose current version has an ONCHAIN_TX step acting through each grant. */
+async function flowsByGrant(db: Database, ownerId: string): Promise<Map<string, Array<{ flow_id: string; name: string; status: string }>>> {
+  const rows = await db
+    .select({ id: flows.id, name: flows.name, status: flows.status, definition: flowVersions.definition })
+    .from(flows)
+    .innerJoin(flowVersions, and(eq(flowVersions.flowId, flows.id), eq(flowVersions.version, flows.currentVersion)))
+    .where(eq(flows.ownerId, ownerId));
+  const out = new Map<string, Array<{ flow_id: string; name: string; status: string }>>();
+  for (const f of rows) {
+    const actions = (f.definition as { actions?: Array<{ type?: string; params?: { grant_id?: unknown } }> }).actions ?? [];
+    const grants = new Set(actions.filter((a) => a.type === "ONCHAIN_TX" && typeof a.params?.grant_id === "string").map((a) => a.params?.grant_id as string));
+    for (const id of grants) out.set(id, [...(out.get(id) ?? []), { flow_id: f.id, name: f.name, status: f.status }]);
+  }
+  return out;
+}
+
+const liveGrants = (db: Database, ownerId: string) =>
+  db
+    .select()
+    .from(onchainGrants)
+    .where(and(eq(onchainGrants.ownerId, ownerId), inArray(onchainGrants.status, ["pending", "active"])))
+    .orderBy(desc(onchainGrants.createdAt));
+
 export function registerOnchainRoutes(app: FastifyInstance, ctx: ApiContext): void {
   const creates = new RateLimiter(20, 3_600_000, ctx.now);
   const explorer = ctx.chain.explorerUrl ?? null;
@@ -135,6 +194,82 @@ export function registerOnchainRoutes(app: FastifyInstance, ctx: ApiContext): vo
     if (!ctx.chainTx) throw new ApiError(503, "not_configured", "onchain grants need a chain RPC on this server");
     return ctx.chainTx;
   };
+
+  // Permission review (Phase 9): only grants that can still act; revoked/expired ones hold no key.
+  app.get("/v1/onchain/review", async (req) => {
+    const me = caller(req);
+    const now = ctx.now();
+    const live = await liveGrants(ctx.db, me.userId);
+    const ids = live.map((g) => g.id);
+    const usedBy = await flowsByGrant(ctx.db, me.userId);
+    const recent = ids.length
+      ? await ctx.db
+          .select({ grantId: onchainActions.grantId, status: onchainActions.status, n: count() })
+          .from(onchainActions)
+          .where(and(eq(onchainActions.ownerId, me.userId), inArray(onchainActions.grantId, ids), gte(onchainActions.createdAt, new Date(now - 7 * DAY))))
+          .groupBy(onchainActions.grantId, onchainActions.status)
+      : [];
+    const last = ids.length
+      ? await ctx.db
+          .select({ grantId: onchainActions.grantId, at: max(onchainActions.createdAt) })
+          .from(onchainActions)
+          .where(and(eq(onchainActions.ownerId, me.userId), inArray(onchainActions.grantId, ids), eq(onchainActions.isTest, false)))
+          .groupBy(onchainActions.grantId)
+      : [];
+    const grants = live.map((g) => {
+      const flowsUsing = usedBy.get(g.id) ?? [];
+      const lastAt = last.find((l) => l.grantId === g.id)?.at ?? null;
+      const findings = reviewFindings(g, g.scope as unknown as GrantScope, flowsUsing, lastAt, now);
+      return {
+        ...grantView(g, explorer),
+        used_by: flowsUsing,
+        actions_7d: Object.fromEntries(recent.filter((r) => r.grantId === g.id).map((r) => [r.status, Number(r.n)])),
+        last_action_at: iso(lastAt),
+        findings,
+      };
+    });
+    grants.sort((a, b) => b.findings.filter((f) => f.level === "warn").length - a.findings.filter((f) => f.level === "warn").length);
+    return {
+      data: {
+        summary: {
+          live: grants.length,
+          active: grants.filter((g) => g.status === "active").length,
+          pending: grants.filter((g) => g.status === "pending").length,
+          warnings: grants.reduce((n, g) => n + g.findings.filter((f) => f.level === "warn").length, 0),
+          flows_using: new Set(grants.flatMap((g) => g.used_by.map((f) => f.flow_id))).size,
+        },
+        grants,
+      },
+    };
+  });
+
+  // Emergency stop: like revoking each one (allowed with an API key: it only removes power).
+  app.post("/v1/onchain/grants/revoke-all", async (req) => {
+    const me = caller(req);
+    const live = await liveGrants(ctx.db, me.userId);
+    const at = new Date(ctx.now());
+    const revoked: OnchainGrantRow[] = [];
+    for (const g of live) {
+      const r = await revokeGrant(ctx.db, g.id, me.userId, at);
+      if (!r) continue; // revoked or expired meanwhile
+      revoked.push(r);
+      await audit(ctx, req, "grant.revoked", { type: "grant", id: r.id }, { label: r.label, was: g.status, all: true });
+    }
+    ctx.logger.info({ userId: me.userId, grants: revoked.length }, "every onchain grant revoked (session keys wiped)");
+    const usedBy = await flowsByGrant(ctx.db, me.userId);
+    const affected = new Set(revoked.flatMap((g) => (usedBy.get(g.id) ?? []).map((f) => f.flow_id)));
+    // The keys are gone already; one optional Safe transaction per Safe also removes the roles.
+    const bySafe = new Map<string, OnchainGrantRow[]>();
+    for (const g of revoked) bySafe.set(g.safeAddress, [...(bySafe.get(g.safeAddress) ?? []), g]);
+    const onchain = [];
+    for (const [safeAddress, gs] of bySafe) {
+      const safe = normalizeAddress(safeAddress);
+      const calls = gs.map((g) => revokeCall({ roles: normalizeAddress(g.rolesAddress), sessionKey: normalizeAddress(g.sessionKeyAddress), roleKey: g.roleKey as Hex }));
+      const ownership = ctx.chainTx ? await safeOwners(ctx.chainTx, safe) : null;
+      onchain.push({ safe, grant_ids: gs.map((g) => g.id), ...(ownership ? approvalOptions(calls, ctx, safe, me.address, ownership, `Revoke ${gs.length} IGNITRA grant(s)`) : { calls: calls.map(callView) }) });
+    }
+    return { data: { revoked: revoked.map((g) => grantView(g, explorer)), affected_flows: affected.size }, onchain };
+  });
 
   app.get("/v1/onchain/grants", async (req) => {
     const me = caller(req);

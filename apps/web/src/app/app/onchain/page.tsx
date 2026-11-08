@@ -4,10 +4,11 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 import { useSession } from "@/components/session";
-import { Badge, Empty, Field, Hex, Notice, Spinner } from "@/components/ui";
+import { GrantPermissions, SafeApprovalPanel } from "@/components/onchain";
+import { Badge, Empty, Field, Hex, Notice, Spinner, useToast } from "@/components/ui";
 import { ApiError, api, errorText, useApi } from "@/lib/api";
-import { when } from "@/lib/format";
-import type { Connection, Grant, Issue } from "@/lib/types";
+import { ago, when } from "@/lib/format";
+import type { Connection, Grant, Issue, PermissionReview, SafeApproval } from "@/lib/types";
 
 interface FnDraft {
   signature: string;
@@ -210,6 +211,131 @@ function NewGrant({ mandates }: { mandates: Connection[] }) {
   );
 }
 
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/**
+ * Permission review: every grant that can still act, what it may do, which flows use it, and what
+ * to fix. "Revoke all" is the emergency stop: every session key is deleted at once.
+ */
+function PermissionReviewPanel({ connections, onChange }: { connections: Connection[]; onChange: () => void }) {
+  const { me } = useSession();
+  const [toast, notify] = useToast();
+  const review = useApi<{ data: PermissionReview }>("/v1/onchain/review");
+  const [busy, setBusy] = useState(false);
+  const [removals, setRemovals] = useState<Array<SafeApproval & { safe: string; grant_ids: string[] }>>([]);
+  const r = review.data?.data;
+
+  const revokeAll = async () => {
+    if (!r) return;
+    const flowsNote = r.summary.flows_using > 0 ? ` ${plural(r.summary.flows_using, "flow")} using them will fail their onchain steps until you pick a new grant.` : "";
+    if (!window.confirm(`Revoke all ${plural(r.summary.live, "grant")} now? IGNITRA deletes every session key at once.${flowsNote}`)) return;
+    setBusy(true);
+    try {
+      const res = await api<{ data: { revoked: Grant[]; affected_flows: number }; onchain: Array<SafeApproval & { safe: string; grant_ids: string[] }> }>("/v1/onchain/grants/revoke-all", { method: "POST" });
+      setRemovals(res.onchain);
+      notify(`Revoked ${plural(res.data.revoked.length, "grant")}. No session key exists anymore.`);
+      await review.reload();
+      onChange();
+    } catch (err) {
+      notify(errorText(err), "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (review.error) return <Notice kind="error">{review.error.message}</Notice>;
+  if (!r) return null;
+  const mandateOf = (id: string | null) => connections.find((c) => c.id === id) ?? null;
+
+  return (
+    <>
+      {toast}
+      {removals.length > 0 ? (
+        <section className="card">
+          <div className="card-head">
+            <span className="label">Also remove the roles from your Safes</span>
+            <span className="small muted">optional: the keys are already gone</span>
+          </div>
+          <div className="card-body stack">
+            {removals.map((a) => (
+              <div key={a.safe} className="stack" style={{ gap: 6 }}>
+                <span className="small">
+                  Safe <Hex value={a.safe} kind="address" /> · {plural(a.grant_ids.length, "grant")}
+                </span>
+                <SafeApprovalPanel approval={a} name={`ignitra-revoke-all-${a.safe.slice(2, 10)}`} />
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+      {r.summary.live === 0 ? null : (
+        <section className="card">
+          <div className="card-head">
+            <span className="label">Permission review</span>
+            <span className="small muted">
+              {plural(r.summary.live, "grant")} can act ({r.summary.active} active, {r.summary.pending} pending) · used by {plural(r.summary.flows_using, "flow")}
+              {r.summary.warnings > 0 ? <span className="failc"> · {plural(r.summary.warnings, "warning")}</span> : null}
+            </span>
+            <button type="button" className="btn sm danger" disabled={busy} onClick={() => void revokeAll()}>
+              {busy ? "Revoking…" : "Revoke all"}
+            </button>
+          </div>
+          <div className="card-body stack">
+            {r.grants.map((g) => {
+              const warns = g.findings.filter((f) => f.level === "warn");
+              const infos = g.findings.filter((f) => f.level === "info");
+              const recent = Object.entries(g.actions_7d);
+              return (
+                <div key={g.id} className="stack" style={{ gap: 6, paddingBottom: 12, borderBottom: "1px solid var(--line, #333)" }}>
+                  <div className="row">
+                    <Link href={`/app/onchain/${g.id}`}>{g.label}</Link>
+                    <Badge status={g.status} text={g.status} />
+                    <span className="small muted">
+                      Safe <Hex value={g.safe} kind="address" /> · expires {when(g.expires_at, me.timezone).slice(0, 16)} · last transaction {g.last_action_at ? ago(g.last_action_at, Date.now(), me.timezone) : "never"}
+                    </span>
+                  </div>
+                  {warns.map((f) => (
+                    <Notice key={f.code} kind="warn">
+                      {f.message}
+                    </Notice>
+                  ))}
+                  {infos.length > 0 ? (
+                    <ul className="small muted" style={{ margin: 0, paddingLeft: 20 }}>
+                      {infos.map((f) => (
+                        <li key={f.code}>{f.message}</li>
+                      ))}
+                    </ul>
+                  ) : null}
+                  <div className="small">
+                    Used by:{" "}
+                    {g.used_by.length === 0 ? (
+                      <span className="muted">no flow</span>
+                    ) : (
+                      g.used_by.map((f, i) => (
+                        <span key={f.flow_id}>
+                          {i > 0 ? ", " : ""}
+                          <Link href={`/app/flows/${f.flow_id}`}>{f.name}</Link> <span className="muted">({f.status})</span>
+                        </span>
+                      ))
+                    )}
+                    {recent.length > 0 ? <span className="muted"> · last 7 days: {recent.map(([s, n]) => `${n} ${s}`).join(", ")}</span> : null}
+                  </div>
+                  <details>
+                    <summary className="small">What it allows</summary>
+                    <div style={{ paddingTop: 8 }}>
+                      <GrantPermissions g={g} mandate={mandateOf(g.mandate_connection_id)} />
+                    </div>
+                  </details>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+    </>
+  );
+}
+
 export default function OnchainPage() {
   const { me } = useSession();
   const grants = useApi<{ data: Grant[] }>("/v1/onchain/grants");
@@ -227,6 +353,7 @@ export default function OnchainPage() {
         </div>
       </div>
       {!team ? <Notice kind="info">Onchain transactions are part of the Team plan.</Notice> : null}
+      <PermissionReviewPanel connections={connections.data?.data ?? []} onChange={() => void grants.reload()} />
       <div className="card">
         {grants.loading ? (
           <div className="card-body">

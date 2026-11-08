@@ -307,6 +307,25 @@ export interface OnchainAction {
   created_at: string;
 }
 
+export interface ReviewFinding {
+  level: "warn" | "info";
+  code: "pending_stale" | "unused" | "idle" | "no_mandate" | "expires_soon" | "sends_eth";
+  message: string;
+}
+
+export interface GrantReview extends Grant {
+  used_by: Array<{ flow_id: string; name: string; status: string }>;
+  /** Onchain actions in the last 7 days, by status. */
+  actions_7d: Record<string, number>;
+  last_action_at: string | null;
+  findings: ReviewFinding[];
+}
+
+export interface PermissionReview {
+  summary: { live: number; active: number; pending: number; warnings: number; flows_using: number };
+  grants: GrantReview[];
+}
+
 export interface GrantDetail extends Grant {
   session_key_balance: string | null;
   approval: SafeApproval | null;

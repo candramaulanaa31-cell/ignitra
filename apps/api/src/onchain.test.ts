@@ -187,6 +187,69 @@ describe("onchain grants", () => {
   });
 });
 
+describe("permission review", () => {
+  it("lists what each live grant allows, who uses it and what to fix; revoke-all stops every one at once", async () => {
+    const me = await user();
+    const create = async (over: Record<string, unknown>) => (await app.inject({ method: "POST", url: "/v1/onchain/grants", headers: me.auth, payload: grantBody(over) })).json().data.id as string;
+    const used = await create({ label: "Payroll" });
+    const stale = await create({ label: "Forgotten", safe: "0x3333333333333333333333333333333333333333", expires_at: new Date(Date.now() + 2 * 3_600_000).toISOString() });
+    const gone = await create({ label: "Old" });
+    await app.inject({ method: "POST", url: `/v1/onchain/grants/${gone}/revoke`, headers: me.auth });
+    await h.db.update(onchainGrants).set({ status: "active", activatedAt: new Date(Date.now() - 40 * 86_400_000) }).where(eq(onchainGrants.id, used));
+    await h.db.update(onchainGrants).set({ createdAt: new Date(Date.now() - 2 * 86_400_000) }).where(eq(onchainGrants.id, stale));
+    const flow = await app.inject({
+      method: "POST",
+      url: "/v1/flows",
+      headers: me.auth,
+      payload: {
+        name: "Pay contributors",
+        definition: {
+          trigger: { type: "TOKEN_TRANSFER", params: { token: TOKEN } },
+          actions: [{ step_id: "pay", type: "ONCHAIN_TX", params: { grant_id: used, to: TOKEN, function: "transfer(address to, uint256 amount)", args: ["{{trigger.from}}", "1000"] } }],
+          settings: { onchain: true },
+        },
+      },
+    });
+    expect(flow.statusCode).toBe(201);
+    const flowId = flow.json().data.id as string;
+    await h.db.update(flows).set({ status: "paused" }).where(eq(flows.id, flowId));
+
+    const review = async () => (await app.inject({ method: "GET", url: "/v1/onchain/review", headers: me.auth })).json().data;
+    const first = await review();
+    expect(first.summary).toEqual({ live: 2, active: 1, pending: 1, warnings: 2, flows_using: 1 });
+    const byId = Object.fromEntries(first.grants.map((g: { id: string }) => [g.id, g]));
+    expect(byId[gone]).toBeUndefined(); // revoked: no key, nothing to review
+    expect(byId[used]).toMatchObject({ status: "active", used_by: [{ flow_id: flowId, name: "Pay contributors", status: "paused" }], actions_7d: {}, last_action_at: null });
+    expect(byId[used].scope.targets[1].functions[0]).toMatchObject({ signature: "transfer(address,uint256)", amount: { arg: 1, max_per_tx: "100000000", max_per_day: "150000000" } });
+    const codes = (id: string) => byId[id].findings.map((f: { level: string; code: string }) => `${f.level}:${f.code}`);
+    expect(codes(used)).toEqual(["warn:unused", "info:idle", "info:no_mandate", "info:sends_eth"]);
+    expect(codes(stale)).toEqual(["warn:pending_stale", "info:no_mandate", "info:expires_soon", "info:sends_eth"]);
+    expect(byId[stale].findings.find((f: { code: string }) => f.code === "expires_soon").message).toMatch(/^Expires in 2 h/);
+
+    // An active flow using it: no longer "unused"; a transaction through it counts as activity.
+    await h.db.update(flows).set({ status: "active" }).where(eq(flows.id, flowId));
+    await h.db.insert(onchainActions).values({ id: "oca_review", ownerId: me.userId, grantId: used, flowId, idempotencyKey: "review-1", toAddress: TOKEN, functionSignature: "transfer(address,uint256)", args: [], status: "confirmed" } as never);
+    const second = (await review()).grants.find((g: { id: string }) => g.id === used);
+    expect(second.findings.map((f: { code: string }) => f.code)).toEqual(["no_mandate", "sends_eth"]);
+    expect(second.actions_7d).toEqual({ confirmed: 1 });
+    expect((await app.inject({ method: "GET", url: "/v1/onchain/review", headers: (await user()).auth })).json().data.summary.live).toBe(0);
+
+    const all = await app.inject({ method: "POST", url: "/v1/onchain/grants/revoke-all", headers: me.auth });
+    expect(all.statusCode).toBe(200);
+    expect(all.json().data.revoked.map((g: { id: string; status: string }) => [g.id, g.status]).sort()).toEqual([[stale, "revoked"], [used, "revoked"]].sort());
+    expect(all.json().data.affected_flows).toBe(1);
+    // One optional Safe transaction per Safe removes the roles (the keys are gone already).
+    const perSafe = all.json().onchain as Array<{ safe: string; grant_ids: string[]; calls: Array<{ description: string }> }>;
+    expect(perSafe.map((o) => o.safe).sort()).toEqual([SAFE, "0x3333333333333333333333333333333333333333"]);
+    expect(perSafe.every((o) => o.calls.length === 1 && /Remove IGNITRA's session key/.test(o.calls[0]?.description ?? ""))).toBe(true);
+    const rows = await h.db.select().from(onchainGrants).where(eq(onchainGrants.ownerId, me.userId));
+    expect(rows.map((r) => [r.status, r.sessionKeyEnc])).toEqual([["revoked", null], ["revoked", null], ["revoked", null]]);
+    expect((await review()).summary.live).toBe(0);
+    const again = (await app.inject({ method: "POST", url: "/v1/onchain/grants/revoke-all", headers: me.auth })).json();
+    expect([again.data.revoked, again.onchain]).toEqual([[], []]);
+  });
+});
+
 describe("ONCHAIN_TX in flows", () => {
   it("needs the opt-in, confirmed mode and an unrevoked grant that covers the call", async () => {
     const me = await user();

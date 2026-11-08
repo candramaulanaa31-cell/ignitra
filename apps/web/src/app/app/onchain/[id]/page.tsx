@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { use, useState, type FormEvent } from "react";
-import { SafeApprovalPanel } from "@/components/onchain";
+import { GrantPermissions, SafeApprovalPanel } from "@/components/onchain";
 import { useSession } from "@/components/session";
 import { Badge, CopyButton, Empty, Hex, Notice, Spinner, TestBadge, useToast } from "@/components/ui";
 import { ApiError, api, errorText, useApi } from "@/lib/api";
@@ -74,39 +74,6 @@ function VerifyForm({ v }: { v: ReturnType<typeof useVerify> }) {
         </Notice>
       ) : null}
     </form>
-  );
-}
-
-function Scope({ g, mandate }: { g: Grant; mandate: Connection | null }) {
-  return (
-    <div className="stack">
-      {g.scope.targets.map((t) => (
-        <div key={t.address} className="stack" style={{ gap: 4 }}>
-          <Hex value={t.address} kind="address" full />
-          <ul className="small" style={{ margin: 0, paddingLeft: 20 }}>
-            {t.functions.map((f) => (
-              <li key={f.selector}>
-                <span className="mono">{f.signature}</span>
-                {f.amount ? (
-                  <span className="muted">
-                    {" "}
-                    · argument {f.amount.arg + 1} ≤ {f.amount.max_per_tx} per call, {f.amount.max_per_day} per day
-                  </span>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ))}
-      <dl className="kv">
-        <dt>ETH per call</dt>
-        <dd className="mono">{g.scope.max_value_per_tx}</dd>
-        <dt>ETH per day</dt>
-        <dd className="mono">{g.scope.max_value_per_day}</dd>
-        <dt>MANDATE</dt>
-        <dd>{g.mandate_connection_id ? mandate ? mandate.label : <span className="mono small">{g.mandate_connection_id}</span> : <span className="muted">none</span>}</dd>
-      </dl>
-    </div>
   );
 }
 
@@ -190,7 +157,7 @@ export default function GrantPage({ params }: { params: Promise<{ id: string }> 
             <span className="label">What it allows</span>
           </div>
           <div className="card-body">
-            <Scope g={g} mandate={connections.data?.data.find((c) => c.id === g.mandate_connection_id) ?? null} />
+            <GrantPermissions g={g} mandate={connections.data?.data.find((c) => c.id === g.mandate_connection_id) ?? null} />
           </div>
         </section>
         <section className="card">

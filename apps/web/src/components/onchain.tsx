@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { errorText } from "@/lib/api";
-import type { SafeApproval } from "@/lib/types";
+import type { Connection, Grant, SafeApproval } from "@/lib/types";
 import { discoverWallets, sendWalletTransaction, type WalletOption } from "@/lib/wallet";
 import { Hex, Notice } from "./ui";
 
@@ -88,6 +88,40 @@ export function SafeApprovalPanel({ approval, name, onSent }: { approval: SafeAp
         </Notice>
       ) : null}
       {error ? <Notice kind="error">{error}</Notice> : null}
+    </div>
+  );
+}
+
+/** What a grant lets the session key do: contracts, functions, amount caps, ETH limits, MANDATE. */
+export function GrantPermissions({ g, mandate }: { g: Grant; mandate: Connection | null }) {
+  return (
+    <div className="stack">
+      {g.scope.targets.map((t) => (
+        <div key={t.address} className="stack" style={{ gap: 4 }}>
+          <Hex value={t.address} kind="address" full />
+          <ul className="small" style={{ margin: 0, paddingLeft: 20 }}>
+            {t.functions.map((f) => (
+              <li key={f.selector}>
+                <span className="mono">{f.signature}</span>
+                {f.amount ? (
+                  <span className="muted">
+                    {" "}
+                    · argument {f.amount.arg + 1} ≤ {f.amount.max_per_tx} per call, {f.amount.max_per_day} per day
+                  </span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+      <dl className="kv">
+        <dt>ETH per call</dt>
+        <dd className="mono">{g.scope.max_value_per_tx}</dd>
+        <dt>ETH per day</dt>
+        <dd className="mono">{g.scope.max_value_per_day}</dd>
+        <dt>MANDATE</dt>
+        <dd>{g.mandate_connection_id ? mandate ? mandate.label : <span className="mono small">{g.mandate_connection_id}</span> : <span className="muted">none</span>}</dd>
+      </dl>
     </div>
   );
 }
