@@ -1,0 +1,25 @@
+# IGNITRA chain listener + matcher (one leader at a time through a database lease; a second
+# instance on another machine stands by). Copy to /etc/systemd/system/, then:
+# systemctl enable --now ignitra-listener
+[Unit]
+Description=IGNITRA listener (sync + matcher)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ignitra
+Group=ignitra
+WorkingDirectory=/opt/ignitra/apps/listener
+EnvironmentFile=/etc/ignitra/ignitra.env
+Environment=LISTENER_ROLES=sync,matcher
+ExecStart=/usr/bin/env node node_modules/tsx/dist/cli.mjs src/main.ts
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

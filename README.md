@@ -28,6 +28,7 @@ listener / clock / inbound URL ──▶ trigger + condition engine ──▶ ru
 | `packages/db` | Drizzle schema, SQL migrations, driver-agnostic client (Postgres or PGlite). |
 | `packages/sdk` | `@ignitra/sdk`: typed, dependency-free API client and webhook verification. |
 | `contracts` | Foundry: `IgnitraSessionBounds`, the stateless onchain check of a grant's expiry and per-call ETH cap. |
+| `deploy` | systemd units for the three services, a Caddyfile for TLS, and the nightly backup script. |
 
 What lives in `packages/core`:
 
@@ -682,6 +683,30 @@ Web Push through a real push service (2026-11-08). Headless Edge with the produc
 This run found a real bug, now fixed. A request sent 24 ms after its flow was created never ran: the matcher's flow index was cached and the stream's offset moved past the request. Rows newer than the index are now matched with an index read after them, and a regression test covers confirmed, fast and inbound flows.
 
 Still open: the npm release; Web Push on a phone; real Resend and Google accounts; a run from an organic VIGIL alert; ONCHAIN_TX on mainnet (it needs a Safe we own; the fork test covers it); a `scored` TRUST LAYER answer.
+
+## Deploying
+
+The low-cost layout from the plan: the web app on Vercel, one small VPS for the API, listener and runner, and Postgres on Neon (or Supabase). The files are in `deploy/`. They have not been run on a VPS yet, and the multi-process setup on real Postgres has not been rehearsed (every test and live check so far used PGlite).
+
+1. **Postgres.** Create a Neon project and use its direct (unpooled) connection string as `DATABASE_URL`. Each service keeps at most 10 connections.
+2. **VPS** (1 vCPU, 1–2 GB). Install Node 22.12+ and pnpm (`corepack enable`), create a user `ignitra`, put the repo in `/opt/ignitra` and run `pnpm install --frozen-lockfile`. Do not use `--prod`: the services run TypeScript through tsx, a dev dependency.
+3. **Configuration.** Copy `.env.example` to `/etc/ignitra/ignitra.env` (mode 600, group `ignitra`), one `KEY=value` per line; quote values with spaces. Fill the secrets (`pnpm gen:secret`, `pnpm gen:vapid`) and the public URLs:
+
+   ```
+   API_PORT=4000
+   API_PUBLIC_URL=https://api.example.com
+   TRUST_PROXY=127.0.0.1
+   WEB_URL=https://app.example.com
+   CORS_ORIGINS=https://app.example.com
+   GOOGLE_REDIRECT_URI=https://app.example.com/api/v1/connections/google/callback
+   ```
+
+4. **Schema and preflight.** `pnpm db:migrate`, then `pnpm ops doctor` until nothing fails.
+5. **Services.** Copy `deploy/systemd/*.service` to `/etc/systemd/system/`, then `systemctl enable --now ignitra-api ignitra-listener ignitra-runner`. Put Caddy in front of the API (`deploy/Caddyfile`); it handles the certificate.
+6. **Web app on Vercel.** Set the root directory to `apps/web` and include files outside it (the workspace packages). Set `API_URL=https://api.example.com`. It is read at build time, so redeploy after changing it.
+7. **Backups and monitoring.** Run `deploy/backup.sh` from cron: nightly, verified, kept 14 days. Add an uptime check on `https://api.example.com/health`, and scrape `127.0.0.1:4001/metrics` on the box with the alerts above.
+
+To update: `git pull && pnpm install --frozen-lockfile && pnpm db:migrate && pnpm ops doctor`, then restart the three services. The listener resumes from its cursors, and runs in flight are reclaimed when their lease expires.
 
 ## Scripts
 

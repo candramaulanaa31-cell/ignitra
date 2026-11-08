@@ -1,0 +1,23 @@
+# IGNITRA runner (executes queued runs; several may run, they claim runs with SKIP LOCKED).
+# Copy to /etc/systemd/system/, then: systemctl enable --now ignitra-runner
+[Unit]
+Description=IGNITRA runner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ignitra
+Group=ignitra
+WorkingDirectory=/opt/ignitra/apps/runner
+EnvironmentFile=/etc/ignitra/ignitra.env
+ExecStart=/usr/bin/env node node_modules/tsx/dist/cli.mjs src/main.ts
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

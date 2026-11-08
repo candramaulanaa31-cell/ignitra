@@ -1,0 +1,14 @@
+# TLS in front of the API (Caddy gets and renews the certificate). Set on the API:
+#   API_PUBLIC_URL=https://api.example.com   TRUST_PROXY=127.0.0.1
+# Health and /metrics ports (4001, 4002) stay on 127.0.0.1 and are not proxied.
+api.example.com {
+	encode gzip
+	reverse_proxy 127.0.0.1:4000
+}
+
+# Optional: the web app on the same machine (pnpm build, then: pnpm --filter @ignitra/web start)
+# instead of Vercel. Its /api/* proxies to API_URL, so cookies stay first-party.
+# app.example.com {
+# 	encode gzip
+# 	reverse_proxy 127.0.0.1:3000
+# }
