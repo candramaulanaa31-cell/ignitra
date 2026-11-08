@@ -93,6 +93,10 @@ describe("database backups", () => {
 
     // Byte-identical when backed up again: nothing was lost or reshaped on the way.
     expect(await dump(target)).toBe(backup);
+    // Also from a server in another TimeZone (initdb takes it from the OS): timestamps are UTC.
+    await target.db.execute(sql`set timezone to 'Asia/Jakarta'`);
+    expect(await dump(target)).toBe(backup);
+    await target.db.execute(sql`set timezone to 'UTC'`);
     const raw = await rows<{ block: string; args: string }>(target, sql`select block_number::text as block, args::text as args from chain_events where block_number > 1000`);
     expect(raw).toEqual([{ block: BIG_BLOCK, args: expect.stringContaining("123456789012345678901234567890") }]);
 

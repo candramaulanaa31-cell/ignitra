@@ -85,6 +85,8 @@ interface FlowIndex {
   readonly schedule: ActiveFlow[];
   readonly inbound: ActiveFlow[];
   readonly loadedAt: number;
+  /** Increases with every load: orders loads against reads exactly (timestamps can tie). */
+  readonly seq: number;
 }
 
 interface Decision {
@@ -182,6 +184,7 @@ export class Matcher {
   readonly #scheduleDue = new Map<string, number>();
   readonly #warned = new Set<string>();
   #index: FlowIndex | null = null;
+  #indexLoads = 0;
   #lastPrune = 0;
 
   constructor(deps: {
@@ -264,16 +267,16 @@ export class Matcher {
    * offset moves past it), so such rows get an index loaded after they were read. For inbound requests
    * this is exact: the hook accepts requests for active flows only, so the activation committed first.
    */
-  async #indexFor(newestMs: number, readAt: number): Promise<FlowIndex> {
+  async #indexFor(newestMs: number, readAfter: number): Promise<FlowIndex> {
     const index = await this.#flows();
-    if (index.loadedAt >= readAt || newestMs < index.loadedAt - FRESH_INDEX_MARGIN_MS) return index;
+    if (index.seq > readAfter || newestMs < index.loadedAt - FRESH_INDEX_MARGIN_MS) return index;
     this.#index = null;
     return this.#flows();
   }
 
   async #flows(): Promise<FlowIndex> {
     if (this.#index && this.#now() - this.#index.loadedAt < this.#opts.flowsCacheMs) return this.#index;
-    const index: FlowIndex = { log: [], poll: [], schedule: [], inbound: [], loadedAt: this.#now() };
+    const index: FlowIndex = { log: [], poll: [], schedule: [], inbound: [], loadedAt: this.#now(), seq: ++this.#indexLoads };
     for (const row of await this.store.loadActiveFlows()) {
       const type = row.definition.trigger.type;
       const module = this.#triggers.has(type) ? this.#triggers.get(type) : undefined;
@@ -426,21 +429,21 @@ export class Matcher {
     if (pick(await this.#flows()).length === 0) {
       // Nobody consumes this stream right now: keep the offset at the end so a new flow starts fresh.
       // Unless a flow was activated since the index was loaded: the new events may be its first ones.
-      const readAt = this.#now();
+      const readAfter = this.#indexLoads;
       const head = await this.store.streamHead(stream);
       if (head <= offset) return { processed: 0, runs: 0, behind: false };
-      if (pick(await this.#indexFor(Number.POSITIVE_INFINITY, readAt)).length === 0) {
+      if (pick(await this.#indexFor(Number.POSITIVE_INFINITY, readAfter)).length === 0) {
         await this.store.setOffset(stream, head);
         return { processed: 0, runs: 0, behind: false };
       }
     }
 
-    const readAt = this.#now();
+    const readAfter = this.#indexLoads;
     const rows = await this.#blockCompleteBatch(stream, offset);
     if (rows.length === 0) return { processed: 0, runs: 0, behind: false };
     // An event without a block time counts as new (the activation filter lets it through too).
     const newest = Math.max(...rows.map((r) => r.blockTimestamp?.getTime() ?? Number.POSITIVE_INFINITY));
-    const flows = pick(await this.#indexFor(newest, readAt));
+    const flows = pick(await this.#indexFor(newest, readAfter));
     const last = rows[rows.length - 1];
     const position = stream === "confirmed" ? (last?.confirmedSeq ?? offset) : (last?.id ?? offset);
     const views = rows.filter((r) => r.status !== "reverted").map(toView);
@@ -626,10 +629,10 @@ export class Matcher {
   async #inbound(paused: string[]): Promise<StreamReport> {
     // Starts at 0 on a fresh database: requests are explicit user input, never history to skip.
     const offset = (await this.store.offset("inbound")) ?? 0;
-    const readAt = this.#now();
+    const readAfter = this.#indexLoads;
     const rows = await this.store.fetchInbound(offset, this.#opts.batchSize);
     if (rows.length === 0) return { processed: 0, runs: 0, behind: false };
-    const index = await this.#indexFor(Math.max(...rows.map((r) => r.receivedAt.getTime())), readAt);
+    const index = await this.#indexFor(Math.max(...rows.map((r) => r.receivedAt.getTime())), readAfter);
     const flows = new Map(index.inbound.map((f) => [f.id, f]));
     const decisions: Decision[] = [];
     for (const row of rows) {

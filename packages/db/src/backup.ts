@@ -151,6 +151,9 @@ export async function exportDatabase(db: Database, out: Writable, options: { now
   };
   return db.transaction(
     async (tx) => {
+      // row_to_json renders timestamptz in the session's TimeZone, which initdb takes from the OS:
+      // UTC makes the same data give the same bytes on every server.
+      await tx.execute(sql`set local timezone to 'UTC'`);
       const migrations = await migrationState(tx);
       const plan = await tablePlan(tx);
       const sequences = await sequenceState(tx);

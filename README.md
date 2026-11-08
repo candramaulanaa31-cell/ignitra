@@ -637,6 +637,7 @@ Nothing is sent to users and nothing is written.
 **Backups.** `pnpm ops db export <file.ignitra.gz>` writes every table from one consistent snapshot, so it can run while the services do (with PGlite, stop the process first: one process per data dir). The same file restores into PGlite or Postgres, which also moves a dev database to Postgres.
 
 - Bigints, jsonb and timestamps round-trip exactly, and every sequence is restored (ids, and the event-stream positions consumers track). A sha256 trailer catches truncation and edits. The file is owner-only.
+- Timestamps are written in UTC whatever the server's TimeZone, so the same data gives the same bytes on every server. It also restores across Postgres major versions (PGlite is PostgreSQL 18).
 - `pnpm ops db verify <file>` checks one without a database. `pnpm ops db import <file>` restores into an **empty** database at the **same schema version** (restore with the IGNITRA version that took the backup, then upgrade), in one transaction: any problem leaves the database as it was.
 - Secrets stay encrypted inside, so a restore needs the same `ENCRYPTION_KEY`. Store the key apart from the backups.
 - Suggested: a nightly export by cron or Task Scheduler, kept 14 days and copied off the machine; a monthly restore test into a scratch database. With managed Postgres, keep its point-in-time recovery too.
@@ -686,7 +687,7 @@ Still open: the npm release; Web Push on a phone; real Resend and Google account
 
 ## Deploying
 
-The low-cost layout from the plan: the web app on Vercel, one small VPS for the API, listener and runner, and Postgres on Neon (or Supabase). The files are in `deploy/`. They have not been run on a VPS yet, and the multi-process setup on real Postgres has not been rehearsed (every test and live check so far used PGlite).
+The low-cost layout from the plan: the web app on Vercel, one small VPS for the API, listener and runner, and Postgres on Neon (or Supabase). The files are in `deploy/`. They have not been run on a VPS yet. The multi-process setup itself was rehearsed on real Postgres (below).
 
 1. **Postgres.** Create a Neon project and use its direct (unpooled) connection string as `DATABASE_URL`. Each service keeps at most 10 connections.
 2. **VPS** (1 vCPU, 1–2 GB). Install Node 22.12+ and pnpm (`corepack enable`), create a user `ignitra`, put the repo in `/opt/ignitra` and run `pnpm install --frozen-lockfile`. Do not use `--prod`: the services run TypeScript through tsx, a dev dependency.
@@ -707,6 +708,29 @@ The low-cost layout from the plan: the web app on Vercel, one small VPS for the 
 7. **Backups and monitoring.** Run `deploy/backup.sh` from cron: nightly, verified, kept 14 days. Add an uptime check on `https://api.example.com/health`, and scrape `127.0.0.1:4001/metrics` on the box with the alerts above.
 
 To update: `git pull && pnpm install --frozen-lockfile && pnpm db:migrate && pnpm ops doctor`, then restart the three services. The listener resumes from its cursors, and runs in flight are reclaimed when their lease expires.
+
+**Production rehearsal (2026-11-08).** PostgreSQL 17.10 on the test machine (the server's TimeZone was Asia/Bangkok). The API, the listener (sync + matcher) and two runners ran as separate processes against mainnet, with the production web build and headless Edge, for 400 s. Migrations went through node-postgres, and `pnpm ops doctor` passed.
+
+| Check | Result |
+|---|---|
+| Kill the listener (hard) | Its replacement took both leases 31 s later and resumed from the cursors. USDG transfers ≥ 1,000, re-read from the RPC for blocks 109,246,188–109,249,777: **337 on chain, 337 runs**, none missing, none twice. |
+| Kill a runner (hard) mid-work | The second runner and a restarted one finished everything: 347 runs, all succeeded. 351 webhook deliveries, all verified with the SDK; outside the deliberately failing endpoint, every key arrived exactly once. |
+| Retries | A receiver that answered 503 to each first delivery got every order again with the same idempotency key, then 200. |
+| SCHEDULE | One run per minute for 6 minutes across the listener swap: no gap, no duplicate. |
+| INBOUND_WEBHOOK + WEB_PUSH | A retried request (same key) ran once. Each of the 4 orders was delivered through Microsoft's push service. Headless Edge shows a notification for about 25 s; it was checked later than that, so display was proven separately. |
+| Backups | Exported while everything ran (3,127 rows), then later from the final state (4,083 rows): each restored into an empty database and backed up again to the same bytes. A PGlite database (PostgreSQL 18.6, UTC) moved to Postgres 17.10 and also gave the same bytes. |
+| Metrics | `/metrics` from Postgres: lag 0 blocks, queue empty, gap detector found nothing missing. |
+
+The rehearsal found one thing to fix: backups had rendered timestamps in the server's TimeZone. The data was the same, but not the bytes, so exports now use UTC.
+
+Event → delivered took 7.7 s (median) in confirmed mode, and almost all of it was ingestion:
+
+- The node serves a block about 2.2 s after its timestamp.
+- 20 blocks of confirmation take about 2.1 s.
+- `POLL_INTERVAL_MS` adds up to 2 s.
+- RPC round trips take about 0.3 s each.
+
+Matching took 0.03 s, a runner claimed the run 0.6 s later, and the webhook took 0.03 s. Fast mode skips the confirmations. The public RPC answered `429 Too Many Requests` twice while the new listener caught up: both were retried with no loss, which is why `RPC_URL_FALLBACK` matters.
 
 ## Scripts
 
