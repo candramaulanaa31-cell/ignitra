@@ -8,10 +8,10 @@ listener / clock / inbound URL ──▶ trigger + condition engine ──▶ ru
  (chain)   (cron)   (HTTP POST)       (match, enrich, evaluate)     (unique key)     (retry)     (Telegram, webhook, push, chain read)
 ```
 
-> **Status: Phase 8 — SDK, integrations and scoped onchain actions.** API keys and the
-> `@ignitra/sdk` TypeScript SDK; VIGIL alerts, TRUST LAYER scores, MANDATE policies and Pons
-> launches; and ONCHAIN_TX: transactions from the user's Safe through a scoped, revocable
-> session key (Zodiac Roles v2), off by default. The npm release of the SDK is pending.
+> **Status: Phase 9 — hardening and launch.** Audit log, dead-letter queue with safe retries,
+> gap detector, metrics, secret and key rotation, database backups, a session-key permission
+> review, and every chain trigger proven end to end on a mainnet fork. Still open: the npm
+> release of the SDK and the checks that need your own accounts (see the launch checklist).
 
 ## Layout
 
@@ -581,6 +581,88 @@ Not validated live yet:
 - **A `scored` TRUST LAYER answer.** The test instance could not index: its explorer calls answered HTTP 402.
 - **The npm release.** Log in to npm and create the `ignitra` organization, then `pnpm release:sdk`. It must be pnpm: it publishes the `dist` entry points from `publishConfig`, and `prepublishOnly` runs the typecheck and tests first.
 
+## Hardening and operations
+
+**Security.**
+
+- **Rate limits and abuse.** Token buckets per API key, account and client address; per-hook and per-connection limits on receivers, plus a failure budget per sender address that bounds URL guessing. Sign-in nonces, test runs, grants and retries have their own limits.
+- **SSRF.** Every outbound request resolves the name first and refuses private, loopback, link-local, CGNAT, multicast and reserved addresses in every spelling (short and mixed IPv4, mapped and IPv4-compatible IPv6, Teredo, `.local`, `localhost.`). The connection is pinned to the address that was checked (no DNS rebinding) and redirects are never followed.
+- **Templates never execute code.** `{{…}}` is a path lookup with escapes (JSON, Sheets formula injection), never `eval`; the prototype chain is never walked.
+- **Audit log.** Every change through the API (flows, connections, API keys, grants, templates, settings, push devices, sign-ins, revealing the webhook secret), the system's auto-pauses and the operator CLI are recorded with the actor (session, API key, operator, system), the key that acted, non-secret details and the client address. `GET /v1/audit-log`, the SDK's `auditLog()`, Settings → Activity.
+- **Permission review.** `/app/onchain` lists every grant that can still act: what it may call and how much, the flows using it, its last 7 days, and findings (no active flow uses it, pending for over a day, idle for 30 days, no MANDATE policy, expiring, can send ETH). **Revoke all** deletes every session key at once and prepares one optional Safe transaction per Safe to remove the roles. API: `GET /v1/onchain/review`, `POST /v1/onchain/grants/revoke-all` (an API key may revoke).
+
+**Reliability.**
+
+- The listener resumes from its cursors after a restart without duplicates, and never advances past a failed tick. One instance leads (lease); a stand-by takes over when the lease expires and the old leader can no longer commit.
+- **Gap detector.** Every `SYNC_VERIFY_EVERY_MS` (5 min) the listener re-reads up to `SYNC_VERIFY_MAX_BLOCKS` recent confirmed blocks and inserts watched events the node had left out. Their flows still run, late but never lost.
+- **Runner crash recovery.** A run whose worker died is reclaimed when its lease expires (`RUNNER_LEASE_MS`); the dead worker is fenced out, and steps that already delivered are not sent again.
+- **Dead letters.** Steps that failed for good wait on the dashboard (Needs attention), `GET /v1/dead-letters` and `pnpm ops dead-letters`. A retry re-runs only those steps with the same idempotency keys.
+- **RPC fallback.** A failing endpoint cools down and the next one serves; the chain id is verified on every endpoint before the first read.
+
+**Metrics.** Prometheus text on the listener's internal health port (`LISTENER_HEALTH_PORT`, path `/metrics`), never on the public API. `pnpm ops metrics` shows the same numbers. Suggested alerts:
+
+| Metric | Alert when | Means |
+|---|---|---|
+| `ignitra_listener_last_tick_age_seconds` | > 60 | The listener is stuck or down |
+| `ignitra_listener_lag_blocks` | > 600 for 5 min (about a minute of blocks) | Ingestion falls behind |
+| `ignitra_gap_detector_missing_total` | increases | An RPC endpoint answered short: check it |
+| `ignitra_rpc_error_rate` | > 0.2 for 10 min on an endpoint | Rate limits or an outage |
+| `ignitra_queue_oldest_due_seconds` | > 120 | The runner is down or saturated |
+| `ignitra_event_to_run_seconds{quantile="0.95"}` | > 60 (depth confirmations) | Slow matching or delivery |
+| `ignitra_step_success_rate` | < 0.9 for an action type, with 20+ steps an hour | A destination or integration is failing |
+| `ignitra_dead_letters` | jumps | Many owners have failed steps to retry |
+
+**Rotating `ENCRYPTION_KEY`.** Secrets use envelope encryption, so a rotation re-wraps data keys and never re-encrypts the data.
+
+1. `pnpm gen:secret`. On every service set the new `ENCRYPTION_KEY`, a new `ENCRYPTION_KEY_ID` (e.g. `k2`), and the old key in `ENCRYPTION_KEYS_PREVIOUS` (`k1:<old>`). Restart. Everything keeps working, and new secrets use the new key.
+2. `pnpm ops keys rewrap --dry-run`, then `pnpm ops keys rewrap`: every connection secret and session key now opens with the new key. A secret no listed key opens is reported, never altered.
+3. `pnpm ops keys status` shows `pending: 0`. Remove the old key from `ENCRYPTION_KEYS_PREVIOUS` and restart. Backups taken before the rotation still need the old key: keep it with them.
+
+**Rotating `WEBHOOK_SIGNING_SECRET`.**
+
+1. Set the new value, with the old one in `WEBHOOK_SIGNING_SECRET_PREVIOUS`, on every service. Restart.
+2. During the overlap, deliveries signed with the owner secret carry two `v1=` signatures (receivers accept either). Inbound URLs and Google sign-ins started with the old value still work. Settings shows the owner's new secret and the previous one. Connection webhooks have their own secrets and are not affected.
+3. Tell owners to switch receivers to the new secret and senders to the new inbound URLs (each flow shows its current URL). Then remove `WEBHOOK_SIGNING_SECRET_PREVIOUS` and restart: the old URLs answer 404.
+
+**Backups.** `pnpm ops db export <file.ignitra.gz>` writes every table from one consistent snapshot, so it can run while the services do (with PGlite, stop the process first: one process per data dir). The same file restores into PGlite or Postgres, which also moves a dev database to Postgres.
+
+- Bigints, jsonb and timestamps round-trip exactly, and every sequence is restored (ids, and the event-stream positions consumers track). A sha256 trailer catches truncation and edits. The file is owner-only.
+- `pnpm ops db verify <file>` checks one without a database. `pnpm ops db import <file>` restores into an **empty** database at the **same schema version** (restore with the IGNITRA version that took the backup, then upgrade), in one transaction: any problem leaves the database as it was.
+- Secrets stay encrypted inside, so a restore needs the same `ENCRYPTION_KEY`. Store the key apart from the backups.
+- Suggested: a nightly export by cron or Task Scheduler, kept 14 days and copied off the machine; a monthly restore test into a scratch database. With managed Postgres, keep its point-in-time recovery too.
+
+**Launch checklist** (2026-11-08). Typecheck plus 556 tests; fork tests opt in with `FORK_TESTS=1`.
+
+| Item | Status | Evidence |
+|---|---|---|
+| Flow from a template in under 2 min | ✅ | One form (Phase 7, live): pick the values and a destination, the flow starts active |
+| Every trigger on a live chain or a fork | ✅ | See the matrix below |
+| No duplicate runs for one event | ✅ | Unique key per event and flow in Postgres; live: 0 duplicate keys, also across two restarts (Phase 7); fork: a restart replays nothing |
+| Retries + idempotency | ✅ | Executor tests (backoff, resume at the failed step, same keys); live: distinct idempotency keys on every delivery |
+| Web Push on a phone | ⏳ | Needs your phone: the server path is tested, a real device is not |
+| Webhook signature verifiable with the SDK | ✅ | Live (Phase 8): 31/31 deliveries verified by `parseWebhook` |
+| Google Sheets + email | ⏳ | Validated against local Resend and Google stubs (Phase 6); real accounts need your keys and OAuth client |
+| Run trace explains every skip and failure | ✅ | Condition traces, sampled evaluations with reasons, per-step errors, dead letters |
+| Docs complete | ✅ | `/docs` (overview, triggers, actions, conditions, variables, webhooks, API, SDK, integrations, onchain), this README, the SDK README |
+| Monitoring in place | ✅ | `/metrics` and the alerts above |
+
+Trigger matrix. The fork test (`apps/listener/src/triggers.fork.test.ts`) runs anvil on a mainnet fork through the production RPC reader, ChainSync and Matcher:
+
+| Trigger | Live on mainnet | Fork (2026-11-08) |
+|---|---|---|
+| TOKEN_TRANSFER | Phases 3, 5, 7 (USDG) | 2 transfers into a wallet → 2 runs |
+| CONTRACT_EVENT | Phase 3 (fast-mode approvals) | USDG `Approval` → 1 run with decoded args |
+| NEW_HOLDER | Phase 3 (checked on chain) | 2 new holders → 2 runs; a repeat transfer → none |
+| BALANCE_THRESHOLD | Phase 3 (native, a bot wallet) | Crossing 1 ETH → 1 run; staying above → none |
+| CONTRACT_DEPLOYED | — | A deployment by the watched EOA → 1 run with the address |
+| STATE_CHANGE | Phase 5 (a USDG pool) | `balanceOf` 0 → 12.5 → 13.5 USDG → 2 runs |
+| NEW_LAUNCH | Phase 8 (a real launch decoded) | A real Pons launch replayed → 1 run with the new token |
+| SCHEDULE | Phase 5 (9 minutes, 0 gaps, 0 duplicates) | not a chain trigger |
+| INBOUND_WEBHOOK | Phases 5, 6 (incl. a duplicate key) | not a chain trigger |
+| VIGIL_ALERT | Phase 8 (VIGIL's signed request and a real finding verified) | not a chain trigger |
+
+Still open: the npm release; Web Push on a phone; real Resend and Google accounts; a run from an organic VIGIL alert; ONCHAIN_TX on mainnet (it needs a Safe we own; the fork test covers it); a `scored` TRUST LAYER answer.
+
 ## Scripts
 
 | Command | |
@@ -595,7 +677,7 @@ Not validated live yet:
 | `pnpm dev:api` | HTTP API (separate process needs real Postgres; with PGlite use the `api` role) |
 | `pnpm dev:web` | web app on :3000; `/api` proxies to `API_URL` |
 | `pnpm gen:secret` / `pnpm gen:vapid` | secrets (base64url) / Web Push VAPID keys |
-| `pnpm ops …` | flows, runs, traces, evaluations, connections, push, watches, sync status, verify, `user plan`, `usage`, `template list / hide / unhide`, `demo setup` |
+| `pnpm ops …` | flows, runs, traces, evaluations, connections, push, watches, sync status, verify, `user plan`, `usage`, `template list / hide / unhide`, `demo setup`, `metrics`, `dead-letters`, `run retry`, `keys status / rewrap`, `db export / verify / import` |
 
 ## Notes
 
@@ -613,4 +695,4 @@ Not validated live yet:
 6. **Builder UI** ✅ builder, live samples, Test flow, variable picker, dashboard, run traces, HTTP_REQUEST / EMAIL / GOOGLE_SHEETS, PWA
 7. **Templates + public surface** ✅ 14 official templates, gallery, use / share templates, landing with a live demo, docs
 8. **SDK, integrations, scoped onchain actions** ✅ (npm release pending) API keys, `@ignitra/sdk`, VIGIL / TRUST LAYER / MANDATE / Pons, ONCHAIN_TX via Safe + Zodiac Roles v2
-9. Hardening + launch
+9. **Hardening + launch** ✅ (npm release and account-bound checks pending) audit log, dead letters, gap detector, metrics, key rotation, backups, permission review, trigger matrix on a fork
