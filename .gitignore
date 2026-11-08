@@ -8,3 +8,5 @@ coverage/
 !.env.example
 .data/
 next-env.d.ts
+# Written (and re-written) by `next dev`: hints for coding agents, not part of the app.
+apps/web/AGENTS.md

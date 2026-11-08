@@ -11,8 +11,7 @@ listener / clock / inbound URL ──▶ trigger + condition engine ──▶ ru
 > **Status: Phase 8 — SDK, integrations and scoped onchain actions.** API keys and the
 > `@ignitra/sdk` TypeScript SDK; VIGIL alerts, TRUST LAYER scores, MANDATE policies and Pons
 > launches; and ONCHAIN_TX: transactions from the user's Safe through a scoped, revocable
-> session key (Zodiac Roles v2), off by default. Live VIGIL delivery and the npm release are
-> still open (see below).
+> session key (Zodiac Roles v2), off by default. The npm release of the SDK is pending.
 
 ## Layout
 
@@ -534,7 +533,7 @@ Not exercised live: the Email and Sheets templates against real accounts (the ac
 
 | Service | In IGNITRA |
 |---|---|
-| VIGIL | The `VIGIL_ALERT` trigger. Add the connection in one of two ways. With a `vgl_` API key, IGNITRA registers its receiver in VIGIL itself and does not keep the key. Without one, the user registers the receiver URL in VIGIL, then pastes the secret VIGIL showed into `POST /v1/connections/:id/verify`; deliveries are refused until then. The receiver `POST /v1/integrations/vigil/:connection_id` checks `x-vigil-signature` (HMAC over `"<ts>.<raw body>"`, 5 min). The trigger's options are stage, minimum severity, rules, contracts and retractions. Each alert runs once per stage. |
+| VIGIL | The `VIGIL_ALERT` trigger. Add the connection in one of two ways. With a `vgl_` API key, IGNITRA registers its receiver in VIGIL itself and does not keep the key. Without one, the user registers the receiver URL in VIGIL, then pastes the secret VIGIL showed into `POST /v1/connections/:id/verify`; deliveries are refused until then. The receiver `POST /v1/integrations/vigil/:connection_id` checks `x-vigil-signature` (HMAC over `"<ts>.<raw body>"`, 5 min). The trigger's options are stage, minimum severity, rules, contracts and retractions. Each alert runs once per stage. VIGIL only delivers to public URLs, so the API must be reachable at a public `API_PUBLIC_URL`. |
 | TRUST LAYER | `counterparty_trust_score`, `from_trust_*` and `to_trust_*` (score, band, status) for conditions and templates. Lookups are lazy: only for flows that read them, after the other conditions pass, cached per address, with a circuit breaker. A 429 pauses every lookup for its `Retry-After`. A score is never invented: without one the score is null and `*_trust_status` says why (`pending`, `unavailable`, …). Set `TRUST_LAYER_API_URL` (and `_KEY`). |
 | MANDATE | The policy every ONCHAIN_TX must pass, defined here: a signed POST of the exact call (`onchain.intent`), answered `{"decision":"allow"|"deny"}`. Only `allow` sends. `deny` is final; anything else is retried and nothing is sent. `ONCHAIN_MANDATE_REQUIRED` (default true) makes it mandatory for every grant. |
 | Pons | The `NEW_LAUNCH` trigger: `TokenLaunched` on the Pons V2 factory. It gives the token, the deployer (`counterparty`), the curve, the pair (ETH or a token), the graduation threshold and the socials (unverified). |
@@ -573,13 +572,14 @@ Live on mainnet, with a local backend, the web app, a stub receiver and a throwa
 | Pons | The latest real launch decoded through `/v1/samples`: LimeLift (LIME), block 108,642,056, ETH pair, 4.2 ETH graduation, socials. |
 | Grant on a real Safe | A pending grant for a mainnet Safe 1.4.1 that is not ours: 7 planned calls and a Transaction Builder file. Without MANDATE → 422; with an API key → 403; verifying an unrelated transaction → refused with the reasons. Nothing was sent. |
 | UI | Headless Edge: Settings, Connections, Onchain, the grant page, the builder with an Onchain transaction step, the new docs. No page errors, no horizontal overflow. |
+| VIGIL | Against a running VIGIL: a test account (wallet sign-in) and a `vgl_` key. IGNITRA registered its public receiver URL (through a tunnel) in VIGIL with that key, and VIGIL accepted it as public. VIGIL's own signed test request crossed the internet to IGNITRA and passed its check (200, 480 ms). Separately, VIGIL's real sender code posted a real VIGIL finding (a large USDG mint): verified, and mapped to the trigger's fields (rule, severity, tx, block, actor, explorer link). |
 
 Not validated live yet:
 
-- **VIGIL deliveries.** VIGIL refuses private receiver URLs, so this needs a public URL.
+- **A run started by a real VIGIL alert.** Three watches on busy wallets raised no alert in about 15 minutes. Such an alert takes the path VIGIL's test request took.
 - **ONCHAIN_TX on mainnet.** It needs a Safe we own; the fork test proves it.
 - **A `scored` TRUST LAYER answer.** The test instance could not index: its explorer calls answered HTTP 402.
-- **The npm release.**
+- **The npm release.** Log in to npm and create the `ignitra` organization, then `pnpm release:sdk`. It must be pnpm: it publishes the `dist` entry points from `publishConfig`, and `prepublishOnly` runs the typecheck and tests first.
 
 ## Scripts
 
@@ -612,5 +612,5 @@ Not validated live yet:
 5. **Accounts and API** ✅ SIWE (EOA + ERC-1271), connections and flows API, SCHEDULE / STATE_CHANGE / INBOUND_WEBHOOK, CHAIN_READ, plan limits + metering
 6. **Builder UI** ✅ builder, live samples, Test flow, variable picker, dashboard, run traces, HTTP_REQUEST / EMAIL / GOOGLE_SHEETS, PWA
 7. **Templates + public surface** ✅ 14 official templates, gallery, use / share templates, landing with a live demo, docs
-8. **SDK, integrations, scoped onchain actions** (built and validated; open: live VIGIL delivery, npm release) API keys, `@ignitra/sdk`, VIGIL / TRUST LAYER / MANDATE / Pons, ONCHAIN_TX via Safe + Zodiac Roles v2
+8. **SDK, integrations, scoped onchain actions** ✅ (npm release pending) API keys, `@ignitra/sdk`, VIGIL / TRUST LAYER / MANDATE / Pons, ONCHAIN_TX via Safe + Zodiac Roles v2
 9. Hardening + launch
