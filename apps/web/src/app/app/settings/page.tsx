@@ -6,7 +6,7 @@ import { useSession } from "@/components/session";
 import { CopyButton, Empty, Field, Notice, useToast } from "@/components/ui";
 import { api, errorText, useApi } from "@/lib/api";
 import { ago, when } from "@/lib/format";
-import type { ApiKey, OwnerNotification } from "@/lib/types";
+import type { ApiKey, AuditEntry, OwnerNotification } from "@/lib/types";
 
 interface Device {
   id: string;
@@ -129,6 +129,96 @@ function ApiKeys({ notify }: { notify: (message: string, kind?: "ok" | "error" |
           </table>
         )}
       </div>
+    </section>
+  );
+}
+
+const ACTIONS: Readonly<Record<string, string>> = {
+  "account.signed_in": "Signed in",
+  "account.updated": "Changed settings",
+  "account.webhook_secret_viewed": "Revealed the webhook secret",
+  "account.plan_changed": "Plan changed",
+  "flow.created": "Created flow",
+  "flow.updated": "Edited flow",
+  "flow.paused": "Paused flow",
+  "flow.resumed": "Resumed flow",
+  "flow.deleted": "Deleted flow",
+  "flow.hook_rotated": "Rotated the hook URL of",
+  "flow.auto_paused": "Auto-paused flow",
+  "connection.created": "Added connection",
+  "connection.verified": "Verified connection",
+  "connection.deleted": "Deleted connection",
+  "api_key.created": "Created API key",
+  "api_key.revoked": "Revoked API key",
+  "grant.created": "Created onchain grant",
+  "grant.verified": "Activated onchain grant",
+  "grant.revoked": "Revoked onchain grant",
+  "template.published": "Shared template",
+  "template.deleted": "Unshared template",
+  "template.hidden": "Template taken down",
+  "template.unhidden": "Template restored",
+  "push.subscribed": "Enabled notifications on a device",
+  "push.unsubscribed": "Removed a notification device",
+};
+
+function who(e: AuditEntry): string {
+  if (e.actor.kind === "api_key") return `API key ${e.actor.api_key_prefix ?? e.actor.api_key_id}…`;
+  return e.actor.kind === "session" ? "your wallet" : e.actor.kind === "operator" ? "the operator" : "IGNITRA";
+}
+
+function what(e: AuditEntry): string {
+  const d = e.details;
+  const name = d.name ?? d.label ?? d.slug ?? (e.action === "account.plan_changed" ? `${String(d.from)} → ${String(d.to)}` : null) ?? (e.action === "account.updated" && d.timezone ? `timezone ${String(d.timezone)}` : null);
+  return name === null || name === undefined ? "" : String(name);
+}
+
+/** Who changed what in the account, from where (the audit log). */
+function Activity() {
+  const { me } = useSession();
+  const [pages, setPages] = useState<AuditEntry[][]>([]);
+  const [next, setNext] = useState<string | null>(null);
+  const first = useApi<{ data: AuditEntry[]; next_before: string | null }>("/v1/audit-log?limit=20");
+  const entries = [...(first.data?.data ?? []), ...pages.flat()];
+  const cursor = pages.length === 0 ? (first.data?.next_before ?? null) : next;
+  const more = async () => {
+    if (!cursor) return;
+    const res = await api<{ data: AuditEntry[]; next_before: string | null }>(`/v1/audit-log?limit=20&before=${cursor}`);
+    setPages((p) => [...p, res.data]);
+    setNext(res.next_before);
+  };
+  return (
+    <section className="card">
+      <div className="card-head">
+        <span className="label">Activity</span>
+        <span className="small muted">every change to your account: who, what, from where</span>
+      </div>
+      {entries.length === 0 ? (
+        <Empty>Nothing yet. Sign-ins and changes to flows, connections, keys and grants show up here.</Empty>
+      ) : (
+        <table className="table responsive">
+          <tbody>
+            {entries.map((e) => (
+              <tr key={e.id}>
+                <td className="small mono nowrap">{when(e.at, me.timezone).slice(0, 16)}</td>
+                <td className="small">
+                  {ACTIONS[e.action] ?? e.action} {e.target.type === "flow" && e.target.id && e.action !== "flow.deleted" ? <a href={`/app/flows/${e.target.id}`}>{what(e) || e.target.id}</a> : <strong>{what(e)}</strong>}
+                  <div className="faint">
+                    by {who(e)}
+                    {e.ip ? ` · ${e.ip}` : ""}
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {cursor ? (
+        <div className="card-body">
+          <button type="button" className="btn sm" onClick={() => void more()}>
+            Older
+          </button>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -299,6 +389,8 @@ export default function SettingsPage() {
       </section>
 
       <ApiKeys notify={notify} />
+
+      <Activity />
 
       <section className="card">
         <div className="card-head">

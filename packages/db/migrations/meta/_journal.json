@@ -57,6 +57,13 @@
       "when": 1794077465143,
       "tag": "0007_onchain",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1794116998712,
+      "tag": "0008_audit_log",
+      "breakpoints": true
     }
   ]
 }

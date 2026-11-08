@@ -147,6 +147,13 @@ describe("Sign-In with Ethereum", () => {
     const [row] = await h.db.select().from(sessions);
     expect(row?.tokenHash).toMatch(/^[0-9a-f]{64}$/);
     expect(JSON.stringify(row)).not.toContain(body.token);
+
+    // Each sign-in is in the account's audit log, with where it came from.
+    const log = (await app.inject({ method: "GET", url: "/v1/audit-log", headers: bearer(body.token) })).json().data;
+    expect(log.map((e: { action: string; details: { token: boolean } }) => [e.action, e.details.token])).toEqual([
+      ["account.signed_in", true],
+      ["account.signed_in", false],
+    ]);
   });
 
   it("redeems a signed message exactly once", async () => {

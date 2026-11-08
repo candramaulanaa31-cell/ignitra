@@ -823,6 +823,37 @@ export type ChainSyncStatus = typeof chainSyncStatus.$inferSelect;
 export type ContractAbi = typeof contractAbis.$inferSelect;
 export type FlowEvaluation = typeof flowEvaluations.$inferSelect;
 export type FlowStats = typeof flowStats.$inferSelect;
+// ---------------------------------------------------------------------------
+// audit_log — who changed what in an account (Phase 9): flows, connections, API keys,
+// onchain grants, templates, account settings; also what the operator (CLI) and the system
+// (auto-pause) did. Never holds secrets: names, types, ids and which settings changed.
+// ---------------------------------------------------------------------------
+export const AUDIT_ACTORS = ["session", "api_key", "operator", "system"] as const;
+export const auditLog = pgTable(
+  "audit_log",
+  {
+    id: text("id").primaryKey(),
+    ownerId: text("owner_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    actor: text("actor", { enum: AUDIT_ACTORS }).notNull(),
+    /** The API key that acted (key_…); null for wallet sessions, the operator and the system. */
+    actorId: text("actor_id"),
+    /** <target>.<verb>, e.g. flow.paused. */
+    action: text("action").notNull(),
+    targetType: text("target_type").notNull(),
+    targetId: text("target_id"),
+    details: jsonb("details").$type<Record<string, unknown>>().notNull().default({}),
+    ip: text("ip"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("audit_log_owner_idx").on(t.ownerId, t.id),
+    check("audit_log_actor", sql`actor in ('session', 'api_key', 'operator', 'system')`),
+    check("audit_log_action_format", sql`action ~ '^[a-z_]+[.][a-z_]+$'`),
+  ],
+);
+
 export type PushSubscription = typeof pushSubscriptions.$inferSelect;
 export type OwnerNotification = typeof ownerNotifications.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
@@ -832,4 +863,5 @@ export type TemplateRow = typeof templates.$inferSelect;
 export type ApiKeyRow = typeof apiKeys.$inferSelect;
 export type OnchainGrantRow = typeof onchainGrants.$inferSelect;
 export type OnchainActionRow = typeof onchainActions.$inferSelect;
+export type AuditLogRow = typeof auditLog.$inferSelect;
 export type NewInboundEvent = typeof inboundEvents.$inferInsert;

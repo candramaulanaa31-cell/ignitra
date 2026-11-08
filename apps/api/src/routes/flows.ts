@@ -14,6 +14,7 @@ import {
   updateFlowDefinition,
   validateFlowDefinition,
 } from "@ignitra/engine";
+import { audit } from "../audit";
 import { caller } from "../auth";
 import type { ApiContext } from "../context";
 import { ApiError, clampLimit, notFound, parse } from "../http";
@@ -87,6 +88,7 @@ export function registerFlowRoutes(app: FastifyInstance, ctx: ApiContext): void 
     requireHookSupport(body.definition);
     const created = await createFlow(ctx.flowDeps, { ownerId: me.userId, name: body.name, definition: body.definition, activate: body.activate ?? false });
     ctx.logger.info({ flowId: created.flowId, userId: me.userId, trigger: created.definition.trigger.type, status: created.status }, "flow created");
+    await audit(ctx, req, "flow.created", { type: "flow", id: created.flowId }, { name: body.name, trigger: created.definition.trigger.type, actions: created.definition.actions.map((a) => a.type), status: created.status });
     return reply.code(201).send({ data: await detail(me.userId, created.flowId) });
   });
 
@@ -104,20 +106,24 @@ export function registerFlowRoutes(app: FastifyInstance, ctx: ApiContext): void 
       await updateFlowDefinition(ctx.flowDeps, req.params.id, body.definition);
     }
     if (body.name !== undefined) await renameFlow(ctx.db, req.params.id, body.name);
-    return { data: await detail(me.userId, req.params.id) };
+    const data = await detail(me.userId, req.params.id);
+    await audit(ctx, req, "flow.updated", { type: "flow", id: req.params.id }, { ...(body.name !== undefined ? { name: body.name } : {}), ...(body.definition !== undefined ? { version: data.version } : {}) });
+    return { data };
   });
 
   app.delete<{ Params: { id: string } }>("/v1/flows/:id", async (req, reply) => {
     const me = caller(req);
-    await owned(me.userId, req.params.id);
+    const row = await owned(me.userId, req.params.id);
     await deleteFlow(ctx.db, req.params.id);
+    await audit(ctx, req, "flow.deleted", { type: "flow", id: req.params.id }, { name: row.flow.name });
     return reply.code(204).send();
   });
 
   app.post<{ Params: { id: string } }>("/v1/flows/:id/pause", async (req) => {
     const me = caller(req);
-    await owned(me.userId, req.params.id);
+    const row = await owned(me.userId, req.params.id);
     await setFlowStatus(ctx.flowDeps, req.params.id, "paused", null);
+    await audit(ctx, req, "flow.paused", { type: "flow", id: req.params.id }, { name: row.flow.name });
     return { data: await detail(me.userId, req.params.id) };
   });
 
@@ -127,6 +133,7 @@ export function registerFlowRoutes(app: FastifyInstance, ctx: ApiContext): void 
     const row = await owned(me.userId, req.params.id);
     requireHookSupport(row.definition);
     await setFlowStatus(ctx.flowDeps, req.params.id, "active", null);
+    await audit(ctx, req, "flow.resumed", { type: "flow", id: req.params.id }, { name: row.flow.name });
     return { data: await detail(me.userId, req.params.id) };
   });
 
@@ -136,6 +143,7 @@ export function registerFlowRoutes(app: FastifyInstance, ctx: ApiContext): void 
     if (row.definition.trigger.type !== "INBOUND_WEBHOOK") throw new ApiError(409, "not_inbound", "this flow is not triggered by an inbound webhook");
     requireHookSupport(row.definition);
     const salt = await rotateInboundHook(ctx.db, req.params.id);
+    await audit(ctx, req, "flow.hook_rotated", { type: "flow", id: req.params.id }, { name: row.flow.name });
     return { data: { hook_url: inboundHookUrl(ctx.publicUrl, ctx.webhookMaster as string, req.params.id, salt) } };
   });
 

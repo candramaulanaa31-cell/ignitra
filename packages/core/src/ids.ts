@@ -18,6 +18,7 @@ export const ID_PREFIXES = {
   template: "tpl",
   grant: "grt",
   onchainAction: "oca",
+  audit: "aud",
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;

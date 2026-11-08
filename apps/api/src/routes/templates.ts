@@ -17,6 +17,7 @@ import {
 } from "@ignitra/core";
 import { templateStats, templates, users, type TemplateRow } from "@ignitra/db";
 import { createFlow, getCurrentDefinition } from "@ignitra/engine";
+import { audit } from "../audit";
 import { caller } from "../auth";
 import type { ApiContext } from "../context";
 import { ApiError, RateLimiter, enforceRate, iso, notFound, parse } from "../http";
@@ -178,6 +179,7 @@ export function registerTemplateRoutes(app: FastifyInstance, ctx: ApiContext): v
       .values({ slug: t.slug, uses: 1, lastUsedAt: sql`now()` })
       .onConflictDoUpdate({ target: templateStats.slug, set: { uses: sql`${templateStats.uses} + 1`, lastUsedAt: sql`now()` } });
     ctx.logger.info({ userId: me.userId, template: t.slug, flowId: created.flowId, status: created.status }, "flow created from template");
+    await audit(ctx, req, "flow.created", { type: "flow", id: created.flowId }, { name: body.name ?? t.name, from_template: t.slug, status: created.status });
     return reply.code(201).send({ data: { flow_id: created.flowId, status: created.status, version: created.version } });
   });
 
@@ -210,6 +212,7 @@ export function registerTemplateRoutes(app: FastifyInstance, ctx: ApiContext): v
       })
       .returning();
     if (!row) throw new Error("template insert failed");
+    await audit(ctx, req, "template.published", { type: "template", id: row.id }, { slug, visibility: body.visibility });
     return reply.code(201).send({ data: { ...card(fromRow(row, me.address), 0), placeholders: derived.placeholders }, url: `${ctx.webUrl}/templates/${slug}` });
   });
 
@@ -225,6 +228,7 @@ export function registerTemplateRoutes(app: FastifyInstance, ctx: ApiContext): v
     const me = caller(req);
     const rows = await ctx.db.delete(templates).where(and(eq(templates.slug, req.params.slug), eq(templates.ownerId, me.userId))).returning({ id: templates.id });
     if (rows.length === 0) throw notFound("template");
+    await audit(ctx, req, "template.deleted", { type: "template", id: rows[0]?.id ?? null }, { slug: req.params.slug });
     return reply.code(204).send();
   });
 }

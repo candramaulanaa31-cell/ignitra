@@ -24,6 +24,7 @@ import {
   webhookDestination,
 } from "@ignitra/actions";
 import { newId } from "@ignitra/core";
+import { audit } from "../audit";
 import { authenticate, caller } from "../auth";
 import type { ApiContext } from "../context";
 import { eq as eqOp } from "drizzle-orm";
@@ -151,12 +152,14 @@ export function registerConnectionRoutes(app: FastifyInstance, ctx: ApiContext):
           secret: dest.secret,
           metadata: dest.metadata,
         });
+        await audit(ctx, req, "connection.created", { type: "connection", id: conn.id }, { type: conn.type, label: conn.label });
         return reply.code(201).send({ data: connectionView(conn) });
       }
       if (body.type === "email") {
         if (!ctx.email) throw new ApiError(503, "not_configured", "email is not configured on this server (EMAIL_PROVIDER / EMAIL_API_KEY / EMAIL_FROM)");
         const conn = await startEmailConnection(ctx.db, ctx.keyring, ctx.http, ctx.email, { ownerId: me.userId, address: body.address, ...(body.label ? { label: body.label } : {}) });
         // Unverified until the user enters the code: flows refuse it until then.
+        await audit(ctx, req, "connection.created", { type: "connection", id: conn.id }, { type: conn.type, label: conn.label });
         return reply.code(201).send({ data: connectionView(conn), verification: "sent" });
       }
       if (body.type === "http") {
@@ -169,6 +172,7 @@ export function registerConnectionRoutes(app: FastifyInstance, ctx: ApiContext):
           metadata: dest.metadata,
         });
         reply.header("cache-control", "no-store");
+        await audit(ctx, req, "connection.created", { type: "connection", id: conn.id }, { type: conn.type, label: conn.label });
         return reply.code(201).send({ data: connectionView(conn), ...(dest.signingSecret ? { signing_secret: dest.signingSecret } : {}) });
       }
       if (body.type === "vigil") {
@@ -194,6 +198,7 @@ export function registerConnectionRoutes(app: FastifyInstance, ctx: ApiContext):
           metadata,
         });
         reply.header("cache-control", "no-store");
+        await audit(ctx, req, "connection.created", { type: "connection", id: conn.id }, { type: conn.type, label: conn.label });
         return reply.code(201).send({
           data: connectionView(conn),
           receiver_url: receiverUrl,
@@ -211,6 +216,7 @@ export function registerConnectionRoutes(app: FastifyInstance, ctx: ApiContext):
         });
         reply.header("cache-control", "no-store");
         // MANDATE verifies IGNITRA's policy requests with it: shown exactly once.
+        await audit(ctx, req, "connection.created", { type: "connection", id: conn.id }, { type: conn.type, label: conn.label });
         return reply.code(201).send({ data: connectionView(conn), signing_secret: dest.signingSecret });
       }
       const dest = webhookDestination(body.url, { allowPrivate: ctx.allowPrivateOutbound });
@@ -223,6 +229,7 @@ export function registerConnectionRoutes(app: FastifyInstance, ctx: ApiContext):
       });
       reply.header("cache-control", "no-store");
       // Shown exactly once: configure the receiver with it now.
+      await audit(ctx, req, "connection.created", { type: "connection", id: conn.id }, { type: conn.type, label: conn.label });
       return reply.code(201).send({ data: connectionView(conn), signing_secret: dest.signingSecret });
     } catch (err) {
       if (err instanceof ConnectionError) throw new ApiError(422, "invalid_connection", err.message);
@@ -240,8 +247,12 @@ export function registerConnectionRoutes(app: FastifyInstance, ctx: ApiContext):
       req.body,
     );
     try {
-      if ("webhook_secret" in body) return { data: connectionView(await setVigilSecret(ctx.db, ctx.keyring, { id: req.params.id, ownerId: me.userId, secret: body.webhook_secret })) };
-      return { data: connectionView(await verifyEmailConnection(ctx.db, ctx.keyring, { id: req.params.id, ownerId: me.userId, code: body.code })) };
+      const conn =
+        "webhook_secret" in body
+          ? await setVigilSecret(ctx.db, ctx.keyring, { id: req.params.id, ownerId: me.userId, secret: body.webhook_secret })
+          : await verifyEmailConnection(ctx.db, ctx.keyring, { id: req.params.id, ownerId: me.userId, code: body.code });
+      await audit(ctx, req, "connection.verified", { type: "connection", id: conn.id }, { type: conn.type });
+      return { data: connectionView(conn) };
     } catch (err) {
       if (err instanceof ConnectionError) {
         const missing = err.message === "connection not found";
@@ -275,6 +286,7 @@ export function registerConnectionRoutes(app: FastifyInstance, ctx: ApiContext):
   app.delete<{ Params: { id: string } }>("/v1/connections/:id", async (req, reply) => {
     const me = caller(req);
     const id = req.params.id;
+    const [target] = await ctx.db.select({ type: connectionsTable.type, label: connectionsTable.label }).from(connectionsTable).where(and(eq(connectionsTable.id, id), eq(connectionsTable.ownerId, me.userId)));
     // Refuse while a flow's current version still uses it (a step sends through it, or its trigger
     // listens on it): the flow would fail permanently.
     const users = await ctx.db
@@ -321,6 +333,7 @@ export function registerConnectionRoutes(app: FastifyInstance, ctx: ApiContext):
       throw err;
     }
     if (!deleted) throw notFound("connection");
+    await audit(ctx, req, "connection.deleted", { type: "connection", id }, { type: target?.type ?? null, label: target?.label ?? null });
     return reply.code(204).send();
   });
 }
@@ -355,6 +368,7 @@ export function registerGoogleCallback(app: FastifyInstance, ctx: ApiContext): v
         metadata: { email: grant.email, scopes: grant.scopes },
       });
       ctx.logger.info({ userId: me.userId, connectionId: conn.id }, "google connected");
+      await audit(ctx, req, "connection.created", { type: "connection", id: conn.id }, { type: conn.type, label: conn.label });
       return back(reply, { google: "connected", connection: conn.id });
     } catch (err) {
       if (err instanceof GoogleAuthError) return back(reply, { google_error: err.message });

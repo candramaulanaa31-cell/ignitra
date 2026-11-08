@@ -61,6 +61,7 @@ for (const [net, prefix] of [
 for (const [net, prefix] of [
   ["::", 128], // unspecified
   ["::1", 128], // loopback
+  ["::", 96], // IPv4-compatible (deprecated) — could wrap a private IPv4, e.g. ::127.0.0.1
   ["::ffff:0:0", 96], // IPv4-mapped (never legitimately in public DNS)
   ["64:ff9b::", 96], // NAT64 — could wrap a private IPv4
   ["64:ff9b:1::", 48], // local-use NAT64
@@ -105,7 +106,8 @@ export function validateOutboundUrl(raw: string, opts: OutboundUrlOptions = {}):
   if (url.username || url.password) throw new SsrfBlockedError("credentials in URLs are not allowed");
   if (url.port === "0") throw new SsrfBlockedError("port 0 is not allowed");
   if (!opts.allowPrivate) {
-    const host = url.hostname.replace(/^\[|\]$/g, "");
+    // A trailing dot ("localhost.") is the same name, fully qualified.
+    const host = url.hostname.replace(/^\[|\]$/g, "").replace(/\.$/, "");
     if (isIP(host)) {
       if (isBlockedAddress(host)) throw new SsrfBlockedError(`${host} is a private or reserved address`);
     } else if (BLOCKED_NAMES.test(host)) {

@@ -3,6 +3,7 @@ import type {
   ActionInfo,
   ActionStep,
   ActionStepInput,
+  AuditEntry,
   Connection,
   ConnectionInput,
   CreatedConnection,
@@ -385,5 +386,21 @@ export class AccountResource {
   /** The secret that signs your inline-URL webhooks: verify deliveries with `parseWebhook`. */
   async webhookSecret(): Promise<string> {
     return (await this.#r<{ data: { secret: string } }>("GET", "/v1/me/webhook-secret")).data.secret;
+  }
+
+  /** One page of the audit log, newest first: every change to the account, by whom, from where. */
+  async auditLog(options: { limit?: number; before?: string } = {}): Promise<Page<AuditEntry>> {
+    return this.#r<Page<AuditEntry>>("GET", "/v1/audit-log", { query: { limit: options.limit, before: options.before } });
+  }
+
+  /** The whole audit log, newest first, fetching pages as you iterate. */
+  async *iterateAuditLog(options: { pageSize?: number } = {}): AsyncGenerator<AuditEntry, void, undefined> {
+    let before: string | undefined;
+    for (;;) {
+      const page = await this.auditLog({ limit: options.pageSize ?? 100, ...(before ? { before } : {}) });
+      yield* page.data;
+      if (!page.next_before) return;
+      before = page.next_before;
+    }
   }
 }

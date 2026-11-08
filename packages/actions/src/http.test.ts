@@ -27,6 +27,9 @@ describe("isBlockedAddress", () => {
     "::ffff:8.8.8.8", // mapped — never legitimate in public DNS
     "64:ff9b::7f00:1", // NAT64 wrapping 127.0.0.1
     "2002:7f00:1::", // 6to4 wrapping 127.0.0.1
+    "::7f00:1", // IPv4-compatible 127.0.0.1
+    "::a00:1", // IPv4-compatible 10.0.0.1
+    "2001:0:4136:e378:8000:63bf:3fff:fdd2", // Teredo
     "ff02::1",
     "not-an-ip",
   ])("blocks %s", (address) => {
@@ -54,6 +57,14 @@ describe("validateOutboundUrl", () => {
     ["http://[::1]/", /private/],
     ["http://[::ffff:127.0.0.1]/", /private/],
     ["http://169.254.169.254/latest/meta-data/", /private/],
+    ["http://127.1/", /private/], // short form of 127.0.0.1
+    ["http://0x7f.1/", /private/], // mixed hex short form
+    ["http://[::7f00:1]/", /private/], // IPv4-compatible IPv6
+    ["http://[0:0:0:0:0:ffff:7f00:1]/", /private/], // mapped, spelled out
+    ["http://LOCALHOST/", /internal hostname/],
+    ["http://localhost./", /internal hostname/], // fully qualified
+    ["http://printer.local/", /internal hostname/],
+    ["http://router.home.arpa/", /internal hostname/],
     ["not a url", /invalid URL/],
   ])("rejects %s", (url, reason) => {
     expect(() => validateOutboundUrl(url)).toThrow(SsrfBlockedError);

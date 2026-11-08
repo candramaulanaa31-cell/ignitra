@@ -12,6 +12,7 @@ import { authenticate, type AuthOptions } from "./auth";
 import type { ApiContext } from "./context";
 import { ApiError, CallerLimiter } from "./http";
 import { registerApiKeyRoutes } from "./routes/api-keys";
+import { registerAuditRoutes } from "./audit";
 import { registerIntegrationRoutes } from "./routes/integrations";
 import { registerOnchainRoutes } from "./routes/onchain";
 import { registerAccountRoutes } from "./routes/account";
@@ -326,6 +327,7 @@ export async function buildServer(deps: ServerDeps) {
     scope.addHook("onRequest", authenticate({ db: ctx.db, corsOrigins: ctx.corsOrigins, now: ctx.now, limiter: ctx.limiter, sessionPerMinute: ctx.rates.sessionPerMinute }));
     registerAccountRoutes(scope, ctx);
     registerApiKeyRoutes(scope, ctx);
+    registerAuditRoutes(scope, ctx);
     registerOnchainRoutes(scope, ctx);
     registerConnectionRoutes(scope, ctx);
     registerFlowRoutes(scope, ctx);

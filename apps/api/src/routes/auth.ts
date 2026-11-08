@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { users } from "@ignitra/db";
+import { recordAudit, users } from "@ignitra/db";
 import { ensureUser } from "@ignitra/engine";
 import { eq } from "drizzle-orm";
 import { SESSION_COOKIE, createSession, issueNonce, verifySiwe } from "../auth";
@@ -41,6 +41,9 @@ export function registerAuthRoutes(app: FastifyInstance, ctx: ApiContext): void 
     setCookie(reply, SESSION_COOKIE, session.token, { maxAgeSeconds: ctx.auth.sessionTtlMs / 1000, secure: ctx.auth.secureCookies });
     reply.header("cache-control", "no-store");
     ctx.logger.info({ userId, address: signIn.address }, "signed in");
+    await recordAudit(ctx.db, { ownerId: userId, actor: "session", action: "account.signed_in", targetType: "account", targetId: userId, details: { user_agent: req.headers["user-agent"]?.slice(0, 120) ?? null, token: body.return_token === true }, ip: req.ip }).catch((err: unknown) =>
+      ctx.logger.error({ err }, "audit log write failed"),
+    );
     // Browsers never see the token (script injected into the page cannot steal the session);
     // non-browser clients opt in and send it as Authorization: Bearer.
     return { ...(body.return_token ? { token: session.token } : {}), expires_at: iso(session.expiresAt), user: userView(user) };

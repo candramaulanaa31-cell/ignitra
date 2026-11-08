@@ -3,6 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { newId, planLimits } from "@ignitra/core";
 import { apiKeys, type ApiKeyRow } from "@ignitra/db";
+import { audit } from "../audit";
 import { generateApiKey, requireSession } from "../auth";
 import type { ApiContext } from "../context";
 import { ApiError, RateLimiter, enforceRate, iso, notFound, parse } from "../http";
@@ -52,6 +53,7 @@ export function registerApiKeyRoutes(app: FastifyInstance, ctx: ApiContext): voi
     const [row] = await ctx.db.insert(apiKeys).values({ id: newId("apiKey"), userId: me.userId, name: body.name, prefix: key.prefix, tokenHash: key.hash }).returning();
     if (!row) throw new Error("api key insert returned nothing");
     ctx.logger.info({ userId: me.userId, keyId: row.id }, "api key created");
+    await audit(ctx, req, "api_key.created", { type: "api_key", id: row.id }, { name: row.name, prefix: row.prefix });
     reply.header("cache-control", "no-store");
     return reply.code(201).send({ data: view(row), key: key.token });
   });
@@ -65,6 +67,7 @@ export function registerApiKeyRoutes(app: FastifyInstance, ctx: ApiContext): voi
       .returning({ id: apiKeys.id });
     if (revoked.length === 0) throw notFound("api key");
     ctx.logger.info({ userId: me.userId, keyId: req.params.id }, "api key revoked");
+    await audit(ctx, req, "api_key.revoked", { type: "api_key", id: req.params.id });
     return reply.code(204).send();
   });
 }

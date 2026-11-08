@@ -158,6 +158,19 @@ export interface Evaluation {
   created_at: string;
 }
 
+/** One line of the account's audit log: who changed what, from where. */
+export interface AuditEntry {
+  id: string;
+  at: string;
+  actor: { kind: "session" | "operator" | "system" } | { kind: "api_key"; api_key_id: string; api_key_prefix: string | null };
+  /** <target>.<verb>, e.g. flow.paused, connection.deleted, account.signed_in. */
+  action: string;
+  target: { type: string; id: string | null };
+  /** Names, types and what changed; never secrets. */
+  details: Record<string, unknown>;
+  ip: string | null;
+}
+
 export interface Page<T> {
   data: T[];
   /** Pass as `before` to get the next (older) page; null on the last one. */

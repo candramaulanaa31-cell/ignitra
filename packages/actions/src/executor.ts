@@ -16,7 +16,7 @@ import {
   type SafeHttpClient,
 } from "@ignitra/core";
 import type { Keyring } from "@ignitra/core/server";
-import { flowStats, flowVersions, flows, ownerNotifications, runSteps, type Database, type Run } from "@ignitra/db";
+import { flowStats, flowVersions, flows, ownerNotifications, recordAudit, runSteps, type Database, type Run } from "@ignitra/db";
 import { loadConnection } from "./connections";
 import type { WebPushSender } from "./push";
 import type { RunQueue } from "./queue";
@@ -306,6 +306,14 @@ export class RunExecutor {
       const owner = updated[0]?.ownerId;
       if (!owner) return false;
       await tx.insert(ownerNotifications).values({ id: newId("notification"), userId: owner, flowId: run.flowId, kind: "flow_auto_paused", message });
+      await recordAudit(tx as unknown as Database, {
+        ownerId: owner,
+        actor: "system",
+        action: "flow.auto_paused",
+        targetType: "flow",
+        targetId: run.flowId,
+        details: { reason: "consecutive_failures", consecutive, last_error: (lastError ?? "unknown").slice(0, 300) },
+      });
       return true;
     });
     if (paused === null) return { kind: "lost" };

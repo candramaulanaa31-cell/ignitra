@@ -59,6 +59,7 @@ outputs as `{{steps.<step_id>.…}}`.
 | `templates.list() / get() / use() / publish() / mine() / delete()` | The template gallery |
 | `catalog.triggers()`, `catalog.actions()` | Every trigger and action with its params and data |
 | `account.me()`, `account.usage()`, `account.webhookSecret()` | Your plan, usage, and the secret that signs your webhooks |
+| `account.auditLog()`, `account.iterateAuditLog()` | Every change to the account: who (wallet session, API key, operator, system), what, from where |
 
 ## Errors
 

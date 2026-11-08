@@ -5,6 +5,7 @@ import { createLogger } from "@ignitra/core/server";
 import { EventDecoder } from "@ignitra/chain";
 import { FakeChain, addr, type FakeErc20 } from "@ignitra/chain/testing";
 import {
+  auditLog,
   chainCursors,
   chainEvents,
   chainSyncStatus,
@@ -280,6 +281,8 @@ describe("runaway protection", () => {
     const [paused] = await h.db.select().from(flows).where(eq(flows.id, flowId));
     expect(paused?.status).toBe("paused");
     expect(paused?.statusReason).toMatch(/auto-paused: 6 matching events dropped .* max_runs_per_hour=2/);
+    const [entry] = await h.db.select().from(auditLog).where(eq(auditLog.targetId, flowId));
+    expect(entry).toMatchObject({ actor: "system", action: "flow.auto_paused", details: { reason: "runaway" } });
 
     p.chain.mine([p.token.transfer(WHALE, BOB, 100n)]);
     await p.confirm();

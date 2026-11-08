@@ -97,6 +97,14 @@ describe("@ignitra/sdk against the API", () => {
     const gone = await ignitra.flows.get(flow.id).catch((e: unknown) => e);
     expect(gone).toBeInstanceOf(IgnitraApiError);
     expect(gone).toMatchObject({ status: 404, code: "not_found" });
+
+    // Everything above is in the audit log, done by this API key.
+    const page = await ignitra.account.auditLog({ limit: 2 });
+    expect(page.data.map((e) => e.action)).toEqual(["flow.deleted", "flow.paused"]);
+    expect(page.data[0]?.actor).toMatchObject({ kind: "api_key" });
+    const actions: string[] = [];
+    for await (const entry of ignitra.account.iterateAuditLog({ pageSize: 2 })) actions.push(entry.action);
+    expect(actions.slice(0, 5)).toEqual(["flow.deleted", "flow.paused", "flow.resumed", "flow.updated", "flow.created"]);
   });
 
   it("surfaces validation issues as IgnitraApiError", async () => {

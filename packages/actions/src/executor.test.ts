@@ -4,7 +4,7 @@ import { z } from "zod";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createActionRegistry, newId, type ActionContext, type ActionDefinition, type ActionResult, type ActionType, type SafeHttpClient } from "@ignitra/core";
 import { createKeyring, createLogger } from "@ignitra/core/server";
-import { connections, createDb, flowStats, flowVersions, flows, ownerNotifications, runSteps, runs, users, type DbHandle, type Run } from "@ignitra/db";
+import { auditLog, connections, createDb, flowStats, flowVersions, flows, ownerNotifications, runSteps, runs, users, type DbHandle, type Run } from "@ignitra/db";
 import { createConnection } from "./connections";
 import { RunExecutor, backoffDelay, finalRunStatus } from "./executor";
 import { Notifier } from "./notices";
@@ -357,6 +357,9 @@ describe("auto-pause", () => {
     expect(flow?.statusReason).toMatch(/^auto-paused: 3 consecutive failed runs — a: not found/);
     const [notice] = await h.db.select().from(ownerNotifications).where(eq(ownerNotifications.userId, userId));
     expect(notice).toMatchObject({ kind: "flow_auto_paused", flowId });
+    // The owner's audit log says the system did it, and why.
+    const [entry] = await h.db.select().from(auditLog).where(eq(auditLog.targetId, flowId));
+    expect(entry).toMatchObject({ ownerId: userId, actor: "system", action: "flow.auto_paused", details: { reason: "consecutive_failures", consecutive: 3 } });
 
     await h.db.update(flows).set({ status: "active" }).where(eq(flows.id, flowId));
     await h.db.update(flowVersions).set({ definition: sql`jsonb_set(definition, '{actions,0,params,script}', '"ok"')` }).where(eq(flowVersions.flowId, flowId));

@@ -207,6 +207,16 @@ export interface OwnerNotification {
   created_at: string;
 }
 
+export interface AuditEntry {
+  id: string;
+  at: string;
+  actor: { kind: "session" | "operator" | "system"; api_key_id?: undefined; api_key_prefix?: undefined } | { kind: "api_key"; api_key_id: string; api_key_prefix: string | null };
+  action: string;
+  target: { type: string; id: string | null };
+  details: Record<string, unknown>;
+  ip: string | null;
+}
+
 export interface ApiKey {
   id: string;
   name: string;

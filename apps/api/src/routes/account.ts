@@ -4,6 +4,7 @@ import { z } from "zod";
 import { isValidTimeZone, nextPeriodStart, planLimits, usagePeriod, type Plan } from "@ignitra/core";
 import { flows, ownerNotifications, pushSubscriptions, usageMonthly, users } from "@ignitra/db";
 import { PushSubscriptionError, addPushSubscription, deriveOwnerSigningSecret } from "@ignitra/actions";
+import { audit } from "../audit";
 import { SESSION_COOKIE, caller, requireSession, revokeSession } from "../auth";
 import type { ApiContext } from "../context";
 import { ApiError, clampLimit, iso, parse, setCookie } from "../http";
@@ -59,6 +60,7 @@ export function registerAccountRoutes(app: FastifyInstance, ctx: ApiContext): vo
     const body = parse(meBody, req.body);
     const [user] = await ctx.db.update(users).set({ timezone: body.timezone }).where(eq(users.id, me.userId)).returning();
     if (!user) throw new ApiError(401, "unauthenticated", "account no longer exists");
+    await audit(ctx, req, "account.updated", { type: "account", id: me.userId }, { timezone: body.timezone });
     return { data: userView(user) };
   });
 
@@ -72,6 +74,8 @@ export function registerAccountRoutes(app: FastifyInstance, ctx: ApiContext): vo
     const me = caller(req);
     if (!ctx.webhookMaster) throw new ApiError(503, "not_configured", "webhook signing is not configured on this server (WEBHOOK_SIGNING_SECRET)");
     reply.header("cache-control", "no-store");
+    // Revealing a secret is worth a line too.
+    await audit(ctx, req, "account.webhook_secret_viewed", { type: "account", id: me.userId });
     return { data: { secret: deriveOwnerSigningSecret(ctx.webhookMaster, me.userId), header: "X-Ignitra-Signature", scheme: "v1=HMAC-SHA256(secret, \"<timestamp>.<raw body>\")" } };
   });
 
@@ -87,6 +91,7 @@ export function registerAccountRoutes(app: FastifyInstance, ctx: ApiContext): vo
     const body = parse(subscriptionBody, req.body);
     try {
       const id = await addPushSubscription(ctx.db, me.userId, { endpoint: body.endpoint, keys: body.keys }, req.headers["user-agent"]?.slice(0, 300) ?? null);
+      await audit(ctx, req, "push.subscribed", { type: "push_subscription", id }, { user_agent: req.headers["user-agent"]?.slice(0, 120) ?? null });
       return reply.code(201).send({ data: { id } });
     } catch (err) {
       if (err instanceof PushSubscriptionError) throw new ApiError(422, "invalid_subscription", err.message);
@@ -97,7 +102,8 @@ export function registerAccountRoutes(app: FastifyInstance, ctx: ApiContext): vo
   app.delete("/v1/push/subscriptions", async (req, reply) => {
     const me = caller(req);
     const body = parse(z.object({ endpoint: z.string().min(1).max(2048) }), req.body);
-    await ctx.db.delete(pushSubscriptions).where(and(eq(pushSubscriptions.endpoint, body.endpoint), eq(pushSubscriptions.userId, me.userId)));
+    const removed = await ctx.db.delete(pushSubscriptions).where(and(eq(pushSubscriptions.endpoint, body.endpoint), eq(pushSubscriptions.userId, me.userId))).returning({ id: pushSubscriptions.id });
+    for (const r of removed) await audit(ctx, req, "push.unsubscribed", { type: "push_subscription", id: r.id });
     return reply.code(204).send();
   });
 

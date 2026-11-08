@@ -24,6 +24,7 @@ import {
   type GrantScope,
   type PlannedCall,
 } from "@ignitra/actions";
+import { audit } from "../audit";
 import { caller, requireSession } from "../auth";
 import type { ApiContext } from "../context";
 import { ApiError, RateLimiter, clampLimit, enforceRate, iso, notFound, parse } from "../http";
@@ -180,6 +181,7 @@ export function registerOnchainRoutes(app: FastifyInstance, ctx: ApiContext): vo
     const grant = await createGrant(ctx.db, ctx.keyring, { ownerId: me.userId, chainId: ctx.chain.id, label: body.label, safe, scope, mandateConnectionId: body.mandate_connection_id ?? null });
     const plan = await planGrant(chain, { id: grant.id, safe, sessionKey: normalizeAddress(grant.sessionKeyAddress), scope });
     ctx.logger.info({ userId: me.userId, grantId: grant.id, safe, calls: plan.calls.length }, "onchain grant created (pending)");
+    await audit(ctx, req, "grant.created", { type: "grant", id: grant.id }, { label: body.label, safe });
     reply.header("cache-control", "no-store");
     return reply.code(201).send({ data: grantView(grant, explorer), approval: approvalOptions(plan.calls, ctx, safe, me.address, ownership, `IGNITRA grant ${grant.id}`) });
   });
@@ -224,6 +226,7 @@ export function registerOnchainRoutes(app: FastifyInstance, ctx: ApiContext): vo
     if (!result.ok) throw new ApiError(422, "grant_not_verified", "the transaction does not set up this grant exactly", { problems: result.problems });
     const active = await activateGrant(ctx.db, grant.id, body.tx_hash, new Date(ctx.now()));
     ctx.logger.info({ userId: me.userId, grantId: grant.id, tx: body.tx_hash }, "onchain grant verified and active");
+    await audit(ctx, req, "grant.verified", { type: "grant", id: grant.id }, { tx_hash: body.tx_hash.toLowerCase() });
     return { data: grantView(active ?? grant, explorer) };
   });
 
@@ -235,6 +238,7 @@ export function registerOnchainRoutes(app: FastifyInstance, ctx: ApiContext): vo
     const revoked = await revokeGrant(ctx.db, before.id, me.userId, new Date(ctx.now()));
     const grant = revoked ?? before;
     ctx.logger.info({ userId: me.userId, grantId: grant.id }, "onchain grant revoked (session key wiped)");
+    if (revoked) await audit(ctx, req, "grant.revoked", { type: "grant", id: grant.id }, { label: grant.label, was: before.status });
     const call = revokeCall({ roles: normalizeAddress(grant.rolesAddress), sessionKey: normalizeAddress(grant.sessionKeyAddress), roleKey: grant.roleKey as Hex });
     const ownership = ctx.chainTx ? await safeOwners(ctx.chainTx, normalizeAddress(grant.safeAddress)) : null;
     return {

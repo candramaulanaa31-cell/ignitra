@@ -11,6 +11,7 @@ import {
   flows,
   inboundEvents,
   ownerNotifications,
+  recordAudit,
   runs,
   triggerState,
   usageMonthly,
@@ -342,7 +343,10 @@ export class MatcherStore {
         .where(and(eq(flows.id, p.flowId), eq(flows.status, "active")))
         .returning({ ownerId: flows.ownerId });
       const owner = paused[0]?.ownerId;
-      if (owner) await tx.insert(ownerNotifications).values({ id: newId("notification"), userId: owner, flowId: p.flowId, kind: "flow_auto_paused", message: p.reason });
+      if (owner) {
+        await tx.insert(ownerNotifications).values({ id: newId("notification"), userId: owner, flowId: p.flowId, kind: "flow_auto_paused", message: p.reason });
+        await recordAudit(tx as unknown as Database, { ownerId: owner, actor: "system", action: "flow.auto_paused", targetType: "flow", targetId: p.flowId, details: { reason: "runaway", message: p.reason } });
+      }
     }
     return { inserted, restored };
   }

@@ -47,6 +47,7 @@ const GROUPS: Array<{ title: string; note?: string; rows: Row[] }> = [
       ["GET", "/v1/me/usage", "Runs this month against the plan"],
       ["GET", "/v1/me/webhook-secret", "The secret that signs your inline-URL webhooks"],
       ["GET", "/v1/notifications", "Notices such as auto-pauses"],
+      ["GET", "/v1/audit-log?limit=&before=", "Every change to the account, newest first: who (your wallet, which API key, the operator or IGNITRA itself), what, and from which address"],
     ],
   },
   {

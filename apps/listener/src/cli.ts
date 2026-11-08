@@ -13,6 +13,7 @@ import {
   flowStats,
   flowVersions,
   flows,
+  recordAudit,
   runs,
   templates,
   usageMonthly,
@@ -308,8 +309,10 @@ try {
     const [wallet, plan] = rest;
     if (!wallet || !plan || !(PLANS as readonly string[]).includes(plan)) throw new Error(`usage: pnpm ops user plan <wallet> <${PLANS.join("|")}>`);
     const userId = await ensureUser(db, wallet);
+    const [before] = await db.select({ plan: users.plan }).from(users).where(eq(users.id, userId));
     await db.update(users).set({ plan: plan as Plan }).where(eq(users.id, userId));
     const pausedFlows = await enforcePlanFeatures(db, userId);
+    await recordAudit(db, { ownerId: userId, actor: "operator", action: "account.plan_changed", targetType: "account", targetId: userId, details: { from: before?.plan ?? null, to: plan, paused_flows: pausedFlows } });
     if (pausedFlows.length > 0) console.log(`paused ${pausedFlows.length} flow(s) using features outside the ${plan} plan: ${pausedFlows.join(", ")}`);
     const l = planLimits(plan);
     console.log(`${userId} (${normalizeAddress(wallet)}) is on ${plan}: ${l.activeFlows ?? "unlimited"} active flows, ${l.runsPerMonth} runs/month${l.overage ? " + metered overage" : ""}, schedules every ${l.minScheduleMinutes} min at most`);
@@ -319,7 +322,11 @@ try {
   } else if (cmd === "template" && (sub === "hide" || sub === "unhide")) {
     const [slug] = rest;
     if (!slug) throw new Error(USAGE);
-    const updated = await db.update(templates).set({ hiddenAt: sub === "hide" ? new Date() : null }).where(eq(templates.slug, slug)).returning({ slug: templates.slug });
+    const updated = await db.update(templates).set({ hiddenAt: sub === "hide" ? new Date() : null }).where(eq(templates.slug, slug)).returning({ id: templates.id, ownerId: templates.ownerId });
+    for (const t of updated) {
+      // The author sees why their template disappeared (or came back).
+      await recordAudit(db, { ownerId: t.ownerId, actor: "operator", action: sub === "hide" ? "template.hidden" : "template.unhidden", targetType: "template", targetId: t.id, details: { slug } });
+    }
     console.log(updated.length ? `${slug} ${sub === "hide" ? "hidden (answers 404)" : "visible again"}` : `no template ${slug}`);
   } else if (cmd === "demo" && sub === "setup") {
     const [wallet] = rest;
