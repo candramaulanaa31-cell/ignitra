@@ -53,6 +53,8 @@ export interface ExecutorDeps {
   push: WebPushSender | null;
   /** WEBHOOK_SIGNING_SECRET — per-owner secrets are derived from it. */
   webhookMaster: string | null;
+  /** WEBHOOK_SIGNING_SECRET_PREVIOUS while it rotates: deliveries are signed with both. */
+  webhookMasterPrevious?: string | null;
   /** Chain RPC for CHAIN_READ (null = not configured). */
   chain?: ChainCallClient | null;
   logger: Logger;
@@ -247,6 +249,7 @@ export class RunExecutor {
       http,
       push: push ? { send: (message) => push.sendToUser(flow.ownerId, message) } : null,
       ownerSigningSecret: webhookMaster ? deriveOwnerSigningSecret(webhookMaster, flow.ownerId) : null,
+      ownerSigningSecretPrevious: webhookMaster && this.#d.webhookMasterPrevious ? deriveOwnerSigningSecret(this.#d.webhookMasterPrevious, flow.ownerId) : null,
       chain: chain ?? null,
       ownerId: flow.ownerId,
       flowSettings: { mode: settings.mode, onchain: settings.onchain === true },

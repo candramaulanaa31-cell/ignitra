@@ -24,6 +24,11 @@ export const runnerEnvShape = {
   ENCRYPTION_KEYS_PREVIOUS: envVar.optional(z.string()),
   /** Master for per-owner webhook signing secrets (inline-URL webhooks). */
   WEBHOOK_SIGNING_SECRET: envVar.optional(z.string().min(16)),
+  /**
+   * The previous master while rotating it: deliveries are signed with both secrets and inbound
+   * URLs made with it keep working. Remove once receivers use the new secrets.
+   */
+  WEBHOOK_SIGNING_SECRET_PREVIOUS: envVar.optional(z.string().min(16)),
   VAPID_PUBLIC_KEY: envVar.optional(z.string()),
   VAPID_PRIVATE_KEY: envVar.optional(z.string()),
   VAPID_SUBJECT: envVar.optional(z.string().regex(/^(mailto:|https:\/\/)/, { message: "must start with mailto: or https://" })),
@@ -127,6 +132,7 @@ export function createRunnerFromEnv(env: RunnerEnv, deps: { db: Database; logger
     logger: deps.logger,
     keyring,
     webhookMaster: env.WEBHOOK_SIGNING_SECRET ?? null,
+    webhookMasterPrevious: env.WEBHOOK_SIGNING_SECRET_PREVIOUS ?? null,
     vapid,
     concurrency: env.RUNNER_CONCURRENCY,
     pollMs: env.RUNNER_POLL_MS,

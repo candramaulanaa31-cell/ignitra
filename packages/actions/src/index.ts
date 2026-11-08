@@ -8,6 +8,7 @@ export * from "./connections";
 export * from "./executor";
 export * from "./queue";
 export * from "./dead-letters";
+export * from "./keys";
 export * from "./notices";
 export * from "./runtime";
 export * from "./env";

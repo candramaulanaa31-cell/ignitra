@@ -16,7 +16,8 @@ function NeedsAttention() {
   const [busy, setBusy] = useState<string | null>(null);
   const letters = useApi<{ data: DeadLetter[] }>("/v1/dead-letters?limit=5");
   const list = letters.data?.data ?? [];
-  if (list.length === 0) return null;
+  // Keep the toast mounted: retrying the last dead letter empties the list.
+  if (list.length === 0) return toast ? <>{toast}</> : null;
   const retry = async (d: DeadLetter) => {
     setBusy(d.run_id);
     try {

@@ -22,6 +22,11 @@ export function signWebhook(secret: string, timestamp: number, body: string): st
   return `v1=${createHmac("sha256", secret).update(`${timestamp}.${body}`).digest("hex")}`;
 }
 
+/** One signature per secret, comma-separated: receivers accept any (used while a secret rotates). */
+export function signWebhookAll(secrets: readonly string[], timestamp: number, body: string): string {
+  return secrets.map((s) => signWebhook(s, timestamp, body)).join(",");
+}
+
 export interface VerifyInput {
   secret: string;
   body: string;

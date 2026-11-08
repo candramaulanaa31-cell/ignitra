@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { parseTemplate, type ActionContext, type ActionDefinition, type ActionResult, type SafeHttpClient, type SafeHttpResponse } from "@ignitra/core";
 import { HttpTransportError, SsrfBlockedError, retryAfterMs, validateOutboundUrl } from "../http";
-import { WEBHOOK_HEADERS, signWebhook } from "../signing";
+import { WEBHOOK_HEADERS, signWebhookAll } from "../signing";
 
 /**
  * HTTP_REQUEST — any method, headers and body, for APIs that are not IGNITRA
@@ -194,7 +194,9 @@ export async function sendHttpRequest(http: SafeHttpClient, p: HttpRequestParams
   if (p.sign) {
     if (!secret) return { status: "failed", retryable: false, error: "sign: true needs WEBHOOK_SIGNING_SECRET on the runner (or sign: false)" };
     headers[WEBHOOK_HEADERS.timestamp] = String(timestamp);
-    headers[WEBHOOK_HEADERS.signature] = signWebhook(secret, timestamp, body ?? "");
+    // The owner's secret is also signed with its previous value while WEBHOOK_SIGNING_SECRET rotates.
+    const previous = secrets.signingSecret ? null : (ctx.ownerSigningSecretPrevious ?? null);
+    headers[WEBHOOK_HEADERS.signature] = signWebhookAll(previous ? [secret, previous] : [secret], timestamp, body ?? "");
   }
 
   // Traces never include header values (they may be secrets) nor the full URL query.

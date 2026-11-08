@@ -70,7 +70,7 @@ export async function collectMetrics(db: Database, chainId: number): Promise<Met
 
   const [dead] = await rows<{ n: unknown }>(sql`
     select count(*) as n from runs r
-    where r.is_test = false and r.status in ('failed', 'partial') and r.created_at >= now() - interval '7 days'
+    where r.is_test = false and r.status in ('failed', 'partial') and r.finished_at >= now() - interval '7 days'
       and exists (select 1 from run_steps s where s.run_id = r.id and s.status = 'failed')`);
 
   const endpoints = ((status?.rpc as { endpoints?: Array<{ label?: string; name?: string; requests?: number; failures?: number; coolingDown?: boolean }> } | undefined)?.endpoints ?? []).map((e) => ({

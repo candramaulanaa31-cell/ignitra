@@ -229,7 +229,7 @@ export default function SettingsPage() {
   const { me, refresh } = useSession();
   const [toast, notify] = useToast();
   const [tz, setTz] = useState(me.timezone);
-  const [secret, setSecret] = useState<string | null>(null);
+  const [secret, setSecret] = useState<{ secret: string; previous_secret: string | null } | null>(null);
   const [pushBusy, setPushBusy] = useState(false);
   const devices = useApi<{ data: Device[] }>("/v1/push/subscriptions");
   const notices = useApi<{ data: OwnerNotification[] }>("/v1/notifications?limit=20");
@@ -362,22 +362,30 @@ export default function SettingsPage() {
       <section className="card">
         <div className="card-head">
           <span className="label">Webhook signing secret</span>
-          {secret ? <CopyButton value={secret} /> : null}
+          {secret ? <CopyButton value={secret.secret} /> : null}
         </div>
         <div className="card-body stack">
           <p className="small muted">
             WEBHOOK and HTTP request steps with a URL are signed with this secret: <span className="mono">X-Ignitra-Signature: v1=HMAC-SHA256(secret, &quot;&lt;X-Ignitra-Timestamp&gt;.&lt;raw body&gt;&quot;)</span>. Reject anything older than 5 minutes.
           </p>
           {secret ? (
-            <code style={{ overflowWrap: "anywhere" }}>{secret}</code>
+            <>
+              <code style={{ overflowWrap: "anywhere" }}>{secret.secret}</code>
+              {secret.previous_secret ? (
+                <Notice kind="warn">
+                  The signing secret is being rotated. Until the old one is retired, deliveries carry a second signature made with your previous secret{" "}
+                  <span className="mono" style={{ overflowWrap: "anywhere" }}>{secret.previous_secret}</span>. Switch your receivers to the secret above now.
+                </Notice>
+              ) : null}
+            </>
           ) : (
             <div>
               <button
                 type="button"
                 className="btn"
                 onClick={() =>
-                  void api<{ data: { secret: string } }>("/v1/me/webhook-secret")
-                    .then((r) => setSecret(r.data.secret))
+                  void api<{ data: { secret: string; previous_secret: string | null } }>("/v1/me/webhook-secret")
+                    .then((r) => setSecret({ secret: r.data.secret, previous_secret: r.data.previous_secret ?? null }))
                     .catch((err: unknown) => notify(errorText(err), "error"))
                 }
               >

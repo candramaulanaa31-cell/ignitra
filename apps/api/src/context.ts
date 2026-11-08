@@ -36,6 +36,8 @@ export interface ApiContext {
   readonly keyring: Keyring | null;
   /** WEBHOOK_SIGNING_SECRET: per-owner webhook secrets and inbound hook URLs. */
   readonly webhookMaster: string | null;
+  /** WEBHOOK_SIGNING_SECRET_PREVIOUS while it rotates: inbound URLs made with it still verify. */
+  readonly webhookMasterPrevious: string | null;
   /** Outbound requests made by the API itself (verifying a Telegram destination). */
   readonly http: SafeHttpClient;
   readonly allowPrivateOutbound: boolean;

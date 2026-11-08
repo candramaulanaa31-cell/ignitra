@@ -69,6 +69,7 @@ type ApiEnvSubset = Pick<
   | "ENCRYPTION_KEY_ID"
   | "ENCRYPTION_KEYS_PREVIOUS"
   | "WEBHOOK_SIGNING_SECRET"
+  | "WEBHOOK_SIGNING_SECRET_PREVIOUS"
   | "TELEGRAM_API_URL"
   | "OUTBOUND_ALLOW_PRIVATE"
   | "ONCHAIN_MANDATE_REQUIRED"
@@ -131,6 +132,7 @@ export async function createApiFromEnv(
     abis,
     keyring,
     webhookMaster: env.WEBHOOK_SIGNING_SECRET ?? null,
+    webhookMasterPrevious: env.WEBHOOK_SIGNING_SECRET_PREVIOUS ?? null,
     allowPrivateOutbound: env.OUTBOUND_ALLOW_PRIVATE,
     ...(env.TELEGRAM_API_URL ? { telegramApiBase: env.TELEGRAM_API_URL } : {}),
     inboundRatePerMinute: env.INBOUND_RATE_PER_MINUTE,

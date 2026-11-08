@@ -124,6 +124,8 @@ export interface ActionContext {
   readonly push: { send(message: PushMessage): Promise<PushDelivery> } | null;
   /** Per-owner webhook signing secret (derived), when configured. */
   readonly ownerSigningSecret: string | null;
+  /** The owner's previous secret while WEBHOOK_SIGNING_SECRET rotates: deliveries carry both signatures. */
+  readonly ownerSigningSecretPrevious?: string | null;
   /** eth_call against the chain (null when the runner has no RPC configured). */
   readonly chain: ChainCallClient | null;
   /** The flow owner (actions that act on the owner's own resources, e.g. ONCHAIN_TX grants). */

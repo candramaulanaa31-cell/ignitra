@@ -357,7 +357,8 @@ export function registerGoogleCallback(app: FastifyInstance, ctx: ApiContext): v
     const { code, state, error } = req.query;
     if (error) return back(reply, { google_error: error === "access_denied" ? "access was not granted" : error });
     if (!ctx.google || !ctx.keyring || !ctx.webhookMaster) return back(reply, { google_error: "Google is not configured on this server" });
-    if (!code || !state || !verifyOAuthState(ctx.webhookMaster, state, me.userId, ctx.now())) return back(reply, { google_error: "the sign-in link expired or was not started here; try again" });
+    const masters = [ctx.webhookMaster, ctx.webhookMasterPrevious].filter((m): m is string => m !== null);
+    if (!code || !state || !masters.some((m) => verifyOAuthState(m, state, me.userId, ctx.now()))) return back(reply, { google_error: "the sign-in link expired or was not started here; try again" });
     try {
       const grant = await exchangeGoogleCode(ctx.http, ctx.google, code);
       const conn = await createConnection(ctx.db, ctx.keyring, {

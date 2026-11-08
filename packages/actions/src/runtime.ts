@@ -178,6 +178,8 @@ export interface RunnerConfig {
   logger: Logger;
   keyring: Keyring | null;
   webhookMaster: string | null;
+  /** WEBHOOK_SIGNING_SECRET_PREVIOUS while it rotates. */
+  webhookMasterPrevious?: string | null;
   vapid: VapidConfig | null;
   concurrency?: number;
   pollMs?: number;
@@ -218,11 +220,12 @@ export function createRunner(config: RunnerConfig): RunnerRuntime {
     keyring: config.keyring,
     push,
     webhookMaster: config.webhookMaster,
+    webhookMasterPrevious: config.webhookMasterPrevious ?? null,
     chain: config.chain ?? null,
     logger: config.logger,
     ...(config.executor ? { options: config.executor } : {}),
   });
-  const notifier = new Notifier({ db: config.db, keyring: config.keyring, http, push, webhookMaster: config.webhookMaster, actions, logger: config.logger });
+  const notifier = new Notifier({ db: config.db, keyring: config.keyring, http, push, webhookMaster: config.webhookMaster, webhookMasterPrevious: config.webhookMasterPrevious ?? null, actions, logger: config.logger });
   return new RunnerRuntime({
     queue,
     executor,

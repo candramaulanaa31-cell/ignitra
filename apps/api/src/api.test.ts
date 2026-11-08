@@ -484,6 +484,28 @@ describe("inbound webhooks", () => {
     await limited.close();
   });
 
+  it("keeps URLs made with the previous WEBHOOK_SIGNING_SECRET working while it rotates", async () => {
+    const { me, flow, path } = await activeHook();
+    const NEXT = "api-test-webhook-master-secret-v2";
+    const rotating = await server({ webhookMaster: NEXT, webhookMasterPrevious: MASTER });
+    const retired = await server({ webhookMaster: NEXT });
+    try {
+      expect((await rotating.inject({ method: "POST", url: path, payload: { during: true } })).statusCode).toBe(202);
+      expect((await retired.inject({ method: "POST", url: path, payload: {} })).statusCode).toBe(404);
+      // The URL the owner sees now is made with the new secret and works after the old one is gone.
+      const fresh = new URL((await rotating.inject({ method: "GET", url: `/v1/flows/${flow.id}`, headers: bearer(me.token) })).json().data.hook_url as string).pathname;
+      expect(fresh).not.toBe(path);
+      expect((await retired.inject({ method: "POST", url: fresh, payload: {} })).statusCode).toBe(202);
+      // Owners see both signing secrets until the old one is retired.
+      const both = (await rotating.inject({ method: "GET", url: "/v1/me/webhook-secret", headers: bearer(me.token) })).json().data;
+      expect(both).toMatchObject({ secret: deriveOwnerSigningSecret(NEXT, me.userId), previous_secret: deriveOwnerSigningSecret(MASTER, me.userId) });
+      expect((await retired.inject({ method: "GET", url: "/v1/me/webhook-secret", headers: bearer(me.token) })).json().data.previous_secret).toBeNull();
+    } finally {
+      await rotating.close();
+      await retired.close();
+    }
+  });
+
   it("bounds guessing per sender address: failed lookups spend a budget, deliveries do not", async () => {
     const { path } = await activeHook();
     const sender = { remoteAddress: "198.51.100.23" };

@@ -75,7 +75,9 @@ export function registerHookRoutes(app: FastifyInstance, ctx: ApiContext): void 
       };
       if (!isId("flow", flowId) || token.length > 128) throw miss();
       const salt = await inboundHookSalt(ctx.db, flowId);
-      if (!salt || !verifyInboundToken(ctx.webhookMaster, flowId, salt, token)) throw miss();
+      // While WEBHOOK_SIGNING_SECRET rotates, URLs made with the previous one keep working.
+      const valid = salt !== null && (verifyInboundToken(ctx.webhookMaster, flowId, salt, token) || (ctx.webhookMasterPrevious !== null && verifyInboundToken(ctx.webhookMasterPrevious, flowId, salt, token)));
+      if (!valid) throw miss();
       enforceRate(limiter, flowId, reply, "requests for this hook");
 
       const [flow] = await ctx.db

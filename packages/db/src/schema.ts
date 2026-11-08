@@ -198,6 +198,8 @@ export const runs = pgTable(
     uniqueIndex("runs_idempotency_key_key").on(t.idempotencyKey),
     index("runs_flow_created_idx").on(t.flowId, t.createdAt.desc()),
     index("runs_chain_event_idx").on(t.chainEventId),
+    // Operational metrics read recent outcomes by finish time (Phase 9).
+    index("runs_finished_idx").on(t.finishedAt),
     index("runs_claim_idx").on(t.nextAttemptAt, t.createdAt).where(sql`status = 'queued'`),
     index("runs_lease_idx").on(t.leaseUntil).where(sql`status = 'running'`),
     index("runs_open_idx")
@@ -236,6 +238,7 @@ export const runSteps = pgTable(
   (t) => [
     primaryKey({ name: "run_steps_pkey", columns: [t.runId, t.stepId] }),
     uniqueIndex("run_steps_run_position_key").on(t.runId, t.position),
+    index("run_steps_finished_idx").on(t.finishedAt),
     check("run_steps_status_valid", inList("status", STEP_STATUSES)),
     check("run_steps_attempts_nonneg", sql`attempts >= 0`),
     check("run_steps_position_nonneg", sql`position >= 0`),

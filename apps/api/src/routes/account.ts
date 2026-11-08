@@ -76,7 +76,7 @@ export function registerAccountRoutes(app: FastifyInstance, ctx: ApiContext): vo
     reply.header("cache-control", "no-store");
     // Revealing a secret is worth a line too.
     await audit(ctx, req, "account.webhook_secret_viewed", { type: "account", id: me.userId });
-    return { data: { secret: deriveOwnerSigningSecret(ctx.webhookMaster, me.userId), header: "X-Ignitra-Signature", scheme: "v1=HMAC-SHA256(secret, \"<timestamp>.<raw body>\")" } };
+    return { data: { secret: deriveOwnerSigningSecret(ctx.webhookMaster, me.userId), previous_secret: ctx.webhookMasterPrevious ? deriveOwnerSigningSecret(ctx.webhookMasterPrevious, me.userId) : null, header: "X-Ignitra-Signature", scheme: "v1=HMAC-SHA256(secret, \"<timestamp>.<raw body>\")" } };
   });
 
   app.get("/v1/notifications", async (req) => {

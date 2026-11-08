@@ -22,14 +22,16 @@ export class Notifier {
   readonly #http: SafeHttpClient;
   readonly #push: WebPushSender | null;
   readonly #webhookMaster: string | null;
+  readonly #webhookMasterPrevious: string | null;
   readonly #log: Logger;
 
-  constructor(deps: { db: Database; keyring: Keyring | null; http: SafeHttpClient; push: WebPushSender | null; webhookMaster: string | null; actions: ActionRegistry; logger: Logger }) {
+  constructor(deps: { db: Database; keyring: Keyring | null; http: SafeHttpClient; push: WebPushSender | null; webhookMaster: string | null; webhookMasterPrevious?: string | null; actions: ActionRegistry; logger: Logger }) {
     this.#db = deps.db;
     this.#keyring = deps.keyring;
     this.#http = deps.http;
     this.#push = deps.push;
     this.#webhookMaster = deps.webhookMaster;
+    this.#webhookMasterPrevious = deps.webhookMasterPrevious ?? null;
     this.#log = deps.logger;
   }
 
@@ -61,6 +63,7 @@ export class Notifier {
         const target = resolveWebhookTarget(params.data, {
           connection,
           ownerSigningSecret: this.#webhookMaster ? deriveOwnerSigningSecret(this.#webhookMaster, ownerId) : null,
+          ownerSigningSecretPrevious: this.#webhookMaster && this.#webhookMasterPrevious ? deriveOwnerSigningSecret(this.#webhookMasterPrevious, ownerId) : null,
         });
         if (typeof target === "string") {
           deliveries.push({ step_id: step.step_id, status: "failed", error: target });

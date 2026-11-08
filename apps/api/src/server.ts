@@ -47,6 +47,7 @@ export interface ServerDeps {
   readonly abis?: AbiRegistry | null;
   readonly keyring?: Keyring | null;
   readonly webhookMaster?: string | null;
+  readonly webhookMasterPrevious?: string | null;
   readonly http?: SafeHttpClient;
   readonly allowPrivateOutbound?: boolean;
   readonly telegramApiBase?: string;
@@ -196,6 +197,7 @@ function context(deps: ServerDeps, triggers: TriggerModuleRegistry, actions: Act
     demoFlowId: deps.demoFlowId ?? null,
     keyring: deps.keyring ?? null,
     webhookMaster: deps.webhookMaster ?? null,
+    webhookMasterPrevious: deps.webhookMasterPrevious ?? null,
     http: deps.http ?? createSafeHttp({ allowPrivate: allowPrivateOutbound }),
     allowPrivateOutbound,
     telegramApiBase: deps.telegramApiBase,

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { ActionContext, ActionDefinition, ActionResult, SafeHttpClient } from "@ignitra/core";
 import { HttpTransportError, SsrfBlockedError, retryAfterMs, validateOutboundUrl } from "../http";
-import { WEBHOOK_HEADERS, signWebhook } from "../signing";
+import { WEBHOOK_HEADERS, signWebhookAll } from "../signing";
 
 /**
  * WEBHOOK — POST a signed JSON envelope.
@@ -38,11 +38,13 @@ export type WebhookParams = z.output<typeof webhookParams>;
 export interface WebhookTarget {
   readonly url: string;
   readonly secret: string;
+  /** Also signed with this one while WEBHOOK_SIGNING_SECRET rotates (owner-secret targets only). */
+  readonly previousSecret?: string | null;
   /** Safe to store in traces (the URL of a connection may embed a token). */
   readonly label: string;
 }
 
-export function resolveWebhookTarget(p: WebhookParams, ctx: Pick<ActionContext, "connection" | "ownerSigningSecret">): WebhookTarget | string {
+export function resolveWebhookTarget(p: WebhookParams, ctx: Pick<ActionContext, "connection" | "ownerSigningSecret" | "ownerSigningSecretPrevious">): WebhookTarget | string {
   if (p.connection_id) {
     const url = ctx.connection?.secret.url;
     const secret = ctx.connection?.secret.signing_secret;
@@ -51,7 +53,7 @@ export function resolveWebhookTarget(p: WebhookParams, ctx: Pick<ActionContext, 
   }
   if (!ctx.ownerSigningSecret) return "WEBHOOK_SIGNING_SECRET is not configured on the runner";
   const url = new URL(p.url as string);
-  return { url: url.toString(), secret: ctx.ownerSigningSecret, label: `${url.origin}${url.pathname}` };
+  return { url: url.toString(), secret: ctx.ownerSigningSecret, previousSecret: ctx.ownerSigningSecretPrevious ?? null, label: `${url.origin}${url.pathname}` };
 }
 
 /** Delivers one signed envelope and maps the outcome (shared by actions and run.reverted notices). */
@@ -67,7 +69,7 @@ export async function deliverWebhook(http: SafeHttpClient, target: WebhookTarget
       headers: {
         "content-type": "application/json",
         [WEBHOOK_HEADERS.timestamp]: String(timestamp),
-        [WEBHOOK_HEADERS.signature]: signWebhook(target.secret, timestamp, body),
+        [WEBHOOK_HEADERS.signature]: signWebhookAll(target.previousSecret ? [target.secret, target.previousSecret] : [target.secret], timestamp, body),
         [WEBHOOK_HEADERS.idempotencyKey]: idempotencyKey,
         [WEBHOOK_HEADERS.delivery]: delivery,
         [WEBHOOK_HEADERS.event]: event,
