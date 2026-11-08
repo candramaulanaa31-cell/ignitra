@@ -6,6 +6,7 @@ import { createActionRegistry, newId, type ActionContext, type ActionDefinition,
 import { createKeyring, createLogger } from "@ignitra/core/server";
 import { auditLog, connections, createDb, flowStats, flowVersions, flows, ownerNotifications, runSteps, runs, users, type DbHandle, type Run } from "@ignitra/db";
 import { createConnection } from "./connections";
+import { RetryRefusedError, listDeadLetters, retryRun } from "./dead-letters";
 import { RunExecutor, backoffDelay, finalRunStatus } from "./executor";
 import { Notifier } from "./notices";
 import { RunQueue } from "./queue";
@@ -404,5 +405,62 @@ describe("run.reverted notices", () => {
     expect(JSON.parse(sent[0]?.body ?? "{}")).toMatchObject({ type: "run.reverted", run_id: runId, step_id: "hook", reason: "reorg" });
     expect((await runRow(runId)).revertNotice).toMatchObject({ deliveries: [{ step_id: "hook", status: "succeeded", http_status: 200 }] });
     expect(await notifier.revertNotices()).toBe(0); // once
+  });
+});
+
+describe("dead letters", () => {
+  it("retries only the failed steps, with the same idempotency keys, and keeps what succeeded", async () => {
+    const { flowId, userId } = await makeFlow([
+      { step_id: "a", type: "WEBHOOK", params: { script: "ok" } },
+      { step_id: "b", type: "WEB_PUSH", params: { script: "permanent" } },
+    ]);
+    const runId = await makeRun(flowId);
+    const { queue, executor } = setup();
+    expect(await executor.execute((await queue.claim(1))[0] as Run)).toEqual({ kind: "finished", status: "partial" });
+    expect((await h.db.select().from(flowStats).where(eq(flowStats.flowId, flowId)))[0]?.runsPartial).toBe(1);
+
+    const letters = await listDeadLetters(h.db, userId, { limit: 10 });
+    expect(letters).toEqual([expect.objectContaining({ runId, flowId, flowName: "Big buys", runStatus: "partial", steps: [expect.objectContaining({ stepId: "b", actionType: "WEB_PUSH", error: "not found", attempts: 1 })] })]);
+    expect(await listDeadLetters(h.db, newId("user"), { limit: 10 })).toEqual([]);
+
+    // The owner fixes the destination, then retries.
+    await h.db.update(flowVersions).set({ definition: sql`jsonb_set(definition, '{actions,1,params,script}', '"ok"')` }).where(eq(flowVersions.flowId, flowId));
+    const firstKeys = calls.filter((c) => c.key.startsWith(`4663:`) && c.key.includes(flowId)).map((c) => `${c.step}=${c.key}`);
+    expect(await retryRun(h.db, { runId, ownerId: userId })).toEqual({ flowId, steps: ["b"] });
+    expect(await runRow(runId)).toMatchObject({ status: "queued", statusReason: "retrying b" });
+    expect((await h.db.select().from(flowStats).where(eq(flowStats.flowId, flowId)))[0]?.runsPartial).toBe(0);
+
+    const before = calls.length;
+    expect(await executor.execute((await queue.claim(1))[0] as Run)).toEqual({ kind: "finished", status: "succeeded" });
+    const again = calls.slice(before);
+    expect(again.map((c) => c.step)).toEqual(["b"]); // "a" already succeeded: never sent twice
+    expect(firstKeys).toContain(`b=${again[0]?.key}`); // the same idempotency key as the failed attempt
+    expect((await stepRows(runId)).map((s) => [s.stepId, s.status, s.attempts])).toEqual([
+      ["a", "succeeded", 1],
+      ["b", "succeeded", 1],
+    ]);
+    expect((await h.db.select().from(flowStats).where(eq(flowStats.flowId, flowId)))[0]).toMatchObject({ runsPartial: 0, runsSucceeded: 1 });
+    expect(await listDeadLetters(h.db, userId, { limit: 10 })).toEqual([]);
+  });
+
+  it("refuses what cannot or should not be retried", async () => {
+    const { flowId, userId } = await makeFlow([{ step_id: "a", type: "WEBHOOK", params: { script: "permanent" } }]);
+    const { queue, executor } = setup();
+    const failed = await makeRun(flowId);
+    await executor.execute((await queue.claim(1))[0] as Run);
+    const code = (p: Promise<unknown>) => p.then(() => "retried", (e: unknown) => (e instanceof RetryRefusedError ? e.code : String(e)));
+
+    expect(await code(retryRun(h.db, { runId: failed, ownerId: newId("user") }))).toBe("not_found");
+    const queued = await makeRun(flowId);
+    expect(await code(retryRun(h.db, { runId: queued, ownerId: userId }))).toBe("not_failed");
+    const test = await makeRun(flowId, { isTest: true, status: "failed", finishedAt: new Date() });
+    expect(await code(retryRun(h.db, { runId: test, ownerId: userId }))).toBe("test_run");
+    const reverted = await makeRun(flowId, { status: "failed", finishedAt: new Date(), revertedAt: new Date(), revertReason: "reorg" });
+    expect(await code(retryRun(h.db, { runId: reverted, ownerId: userId }))).toBe("event_reverted");
+    await h.db.update(flows).set({ status: "paused" }).where(eq(flows.id, flowId));
+    expect(await code(retryRun(h.db, { runId: failed, ownerId: userId }))).toBe("flow_inactive");
+    await h.db.update(flows).set({ status: "active" }).where(eq(flows.id, flowId));
+    expect(await code(retryRun(h.db, { runId: failed, ownerId: userId }))).toBe("retried");
+    expect(await code(retryRun(h.db, { runId: failed, ownerId: userId }))).toBe("not_failed"); // already queued again
   });
 });

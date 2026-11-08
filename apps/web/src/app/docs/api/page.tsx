@@ -70,6 +70,8 @@ const GROUPS: Array<{ title: string; note?: string; rows: Row[] }> = [
     rows: [
       ["GET", "/v1/flows/:id/runs?limit=&before=&status=", `Newest first, up to 200 per page; status is one of ${RUN_STATUSES.join(", ")}`],
       ["GET", "/v1/runs/:id", "The full trace: trigger evidence, every condition, every step attempt"],
+      ["GET", "/v1/dead-letters?limit=&before=", "Runs whose steps failed for good (a permanent error, or every retry used up), newest first"],
+      ["POST", "/v1/runs/:id/retry", "Runs a failed or partial run's failed steps again, with the same idempotency keys: delivered steps are not repeated. The flow must be active"],
       ["GET", "/v1/flows/:id/evaluations?limit=&outcome=", `“Why it did not run”: ${EVALUATION_OUTCOMES.join(", ")}`],
     ],
   },

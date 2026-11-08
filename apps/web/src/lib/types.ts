@@ -104,6 +104,16 @@ export interface RunSummary {
   tx_hash: string | null;
 }
 
+/** A run with steps that failed for good, waiting for the owner. */
+export interface DeadLetter {
+  run_id: string;
+  flow_id: string;
+  flow_name: string;
+  run_status: "failed" | "partial";
+  created_at: string;
+  steps: Array<{ step_id: string; action_type: string; error: string | null; attempts: number; failed_at: string | null }>;
+}
+
 export interface RunStep {
   step_id: string;
   position: number;

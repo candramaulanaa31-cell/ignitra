@@ -54,6 +54,7 @@ outputs as `{{steps.<step_id>.…}}`.
 | `flows.iterateRuns(id)` | Every run, fetching pages as you go: `for await (const run of …)` |
 | `flows.evaluations(id)` | "Why it did not run": matches held back by conditions or limits |
 | `runs.get(id)` | The full trace: trigger evidence, every condition with its actual value, every step attempt |
+| `runs.deadLetters()`, `runs.iterateDeadLetters()`, `runs.retry(id)` | Runs whose steps failed for good, and running those steps again (same idempotency keys; delivered steps are not repeated) |
 | `connections.list() / create() / delete() / verify()` | Secrets go in and never come out |
 | `connections.setVigilSecret(id, secret)` | A VIGIL connection made without an API key: the secret VIGIL showed for its receiver URL |
 | `templates.list() / get() / use() / publish() / mine() / delete()` | The template gallery |

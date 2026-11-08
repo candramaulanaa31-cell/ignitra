@@ -14,10 +14,11 @@ import {
   updateFlowDefinition,
   validateFlowDefinition,
 } from "@ignitra/engine";
+import { RetryRefusedError, listDeadLetters, retryRun, type DeadLetter } from "@ignitra/actions";
 import { audit } from "../audit";
 import { caller } from "../auth";
 import type { ApiContext } from "../context";
-import { ApiError, clampLimit, notFound, parse } from "../http";
+import { ApiError, RateLimiter, clampLimit, enforceRate, iso, notFound, parse } from "../http";
 import { evaluationView, flowView, runView } from "../views";
 
 const createBody = z.object({ name: z.string().max(200), definition: z.unknown(), activate: z.boolean().optional() }).strict();
@@ -189,5 +190,39 @@ export function registerFlowRoutes(app: FastifyInstance, ctx: ApiContext): void 
     if (!row) throw notFound("run");
     const steps = await ctx.db.select().from(runSteps).where(eq(runSteps.runId, row.run.id));
     return { data: runView(row.run, steps) };
+  });
+
+  // ---- dead letters: steps that failed for good, and retrying them (Phase 9)
+  const deadLetterView = (d: DeadLetter) => ({
+    run_id: d.runId,
+    flow_id: d.flowId,
+    flow_name: d.flowName,
+    run_status: d.runStatus,
+    created_at: iso(d.runCreatedAt),
+    steps: d.steps.map((st) => ({ step_id: st.stepId, action_type: st.actionType, error: st.error, attempts: st.attempts, failed_at: iso(st.failedAt) })),
+  });
+
+  app.get<{ Querystring: Record<string, string | undefined> }>("/v1/dead-letters", async (req) => {
+    const me = caller(req);
+    const q = parse(z.object({ limit: z.string().optional(), before: z.string().regex(/^run_[0-9a-z]{26}$/).optional() }), req.query);
+    const limit = clampLimit(q.limit, 50, 200);
+    const page = await listDeadLetters(ctx.db, me.userId, { limit, before: q.before });
+    return { data: page.map(deadLetterView), next_before: page.length === limit ? (page.at(-1)?.runId ?? null) : null };
+  });
+
+  const retries = new RateLimiter(120, 3_600_000, ctx.now);
+  app.post<{ Params: { id: string } }>("/v1/runs/:id/retry", async (req, reply) => {
+    const me = caller(req);
+    enforceRate(retries, me.userId, reply, "run retries this hour");
+    try {
+      const { flowId, steps } = await retryRun(ctx.db, { runId: req.params.id, ownerId: me.userId });
+      await audit(ctx, req, "run.retried", { type: "run", id: req.params.id }, { flow_id: flowId, steps });
+      const [run] = await ctx.db.select().from(runs).where(eq(runs.id, req.params.id));
+      if (!run) throw notFound("run");
+      return reply.code(202).send({ data: runView(run) });
+    } catch (err) {
+      if (err instanceof RetryRefusedError) throw new ApiError(err.code === "not_found" ? 404 : 409, err.code, err.message);
+      throw err;
+    }
   });
 }

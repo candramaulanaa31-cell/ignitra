@@ -141,6 +141,16 @@ export interface Run {
   tx_hash: string | null;
 }
 
+/** A run with steps that failed for good (a permanent error, or every retry used up). */
+export interface DeadLetter {
+  run_id: string;
+  flow_id: string;
+  flow_name: string;
+  run_status: "failed" | "partial";
+  created_at: string;
+  steps: Array<{ step_id: string; action_type: string; error: string | null; attempts: number; failed_at: string | null }>;
+}
+
 export interface RunDetail extends Run {
   trigger_event: Record<string, unknown>;
   conditions_result: unknown[];

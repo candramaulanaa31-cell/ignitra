@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { and, between, count, desc, eq, max, min } from "drizzle-orm";
+import { and, between, count, desc, eq, inArray, max, min, sql } from "drizzle-orm";
 import { PLANS, normalizeAddress, normalizeHash, planLimits, toChecksumAddress, usagePeriod, type NormalizedHash, type Plan } from "@ignitra/core";
 import { chainConfigFromEnv, loadServiceEnv } from "@ignitra/core/server";
 import { AbiRegistry, BlockscoutAbiFetcher, EventDecoder, LogRangeTooLargeError, createRpcChainReader, type RawLog } from "@ignitra/chain";
@@ -14,6 +14,7 @@ import {
   flowVersions,
   flows,
   recordAudit,
+  runSteps,
   runs,
   templates,
   usageMonthly,
@@ -33,7 +34,7 @@ import {
   updateFlowDefinition,
   type FlowServiceDeps,
 } from "@ignitra/engine";
-import { createActionModules } from "@ignitra/actions";
+import { createActionModules, retryRun } from "@ignitra/actions";
 import { DELIVERY_USAGE, deliveryCommand } from "./cli-delivery";
 import { explorerApiUrl, listenerEnvSchema } from "./config";
 import { WatchFilter } from "./filter";
@@ -49,6 +50,8 @@ import { DbAbiStore, ListenerStore, addWatch } from "./store";
  *   flow update <id> <file.json>
  *   runs [--flow <id>] [--limit n]          queued/finished runs with condition traces
  *   evals --flow <id> [--limit n]            why matching events did NOT run
+ *   dead-letters [--owner 0x…] [--limit n]   runs whose steps failed for good
+ *   run retry <run id>                       run those steps again (delivered steps are not repeated)
  *
  * Accounts
  *   user plan <wallet> <free|builder|team>   (no billing yet: operators set plans)
@@ -69,6 +72,7 @@ const USAGE = `usage: pnpm ops <command>
   flow update <id> <file.json>
   runs [--flow <id>] [--limit n]
   evals --flow <id> [--limit n]
+  dead-letters [--owner 0x..] [--limit n] | run retry <run-id>
   user plan <wallet> <free|builder|team> | usage [--owner 0x..]
   template list | template hide <slug> | template unhide <slug>
   demo setup <wallet> [--token 0x..] [--min 1000]
@@ -353,6 +357,42 @@ try {
     if (!limits.overage) {
       console.log(`warning: the owner is on the ${owner?.plan ?? "free"} plan (${limits.runsPerMonth} runs/month, no overage); the demo stops when they are used. Give it room: pnpm ops user plan ${wallet} team`);
     }
+  } else if (cmd === "dead-letters") {
+    // Runs whose steps failed for good, across accounts (or one with --owner).
+    const rows = await db
+      .select({ run: runs.id, flow: flows.name, owner: users.address, status: runs.status, at: runs.createdAt })
+      .from(runs)
+      .innerJoin(flows, eq(flows.id, runs.flowId))
+      .innerJoin(users, eq(users.id, flows.ownerId))
+      .where(
+        and(
+          eq(runs.isTest, false),
+          inArray(runs.status, ["failed", "partial"]),
+          values.owner ? eq(users.address, normalizeAddress(values.owner)) : undefined,
+          sql`exists (select 1 from run_steps s where s.run_id = ${runs.id} and s.status = 'failed')`,
+        ),
+      )
+      .orderBy(desc(runs.id))
+      .limit(limit);
+    const failed = rows.length ? await db.select({ run: runSteps.runId, step: runSteps.stepId, error: runSteps.error }).from(runSteps).where(and(inArray(runSteps.runId, rows.map((r) => r.run)), eq(runSteps.status, "failed"))) : [];
+    console.table(
+      rows.map((r) => ({
+        run: r.run,
+        flow: short(r.flow, 30),
+        owner: short(r.owner, 12),
+        status: r.status,
+        at: r.at.toISOString().slice(0, 16),
+        failed: failed.filter((f) => f.run === r.run).map((f) => `${f.step}: ${short(f.error ?? "", 60)}`).join(" | "),
+      })),
+    );
+  } else if (cmd === "run" && sub === "retry") {
+    const [runId] = rest;
+    if (!runId) throw new Error(USAGE);
+    const [owner] = await db.select({ id: flows.ownerId }).from(runs).innerJoin(flows, eq(flows.id, runs.flowId)).where(eq(runs.id, runId));
+    if (!owner) throw new Error(`no run ${runId}`);
+    const result = await retryRun(db, { runId, ownerId: owner.id });
+    await recordAudit(db, { ownerId: owner.id, actor: "operator", action: "run.retried", targetType: "run", targetId: runId, details: { flow_id: result.flowId, steps: result.steps } });
+    console.log(`${runId} queued again for ${result.steps.join(", ")} (steps that delivered are not repeated)`);
   } else if (cmd === "usage") {
     const period = usagePeriod();
     const rows = await db

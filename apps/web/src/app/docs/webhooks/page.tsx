@@ -121,6 +121,10 @@ export default function WebhooksPage() {
           Delivery is at-least-once: a retry, or a crash between your answer and IGNITRA recording it, can deliver the same step again. Store <code>X-Ignitra-Idempotency-Key</code> and ignore repeats.
         </li>
         <li>
+          After the last attempt the step is a dead letter: it shows under Needs attention on the dashboard. Once your receiver is fixed, Retry sends it again with the same <code>X-Ignitra-Idempotency-Key</code>; the run&apos;s other
+          steps that already delivered are not sent again.
+        </li>
+        <li>
           Your answer is recorded in the run trace (status, timing, the first 500 characters), and a JSON answer is available to later steps as <code>{"{{steps.<step_id>.body}}"}</code>.
         </li>
         <li>Webhook URLs must be public: private, loopback and link-local addresses are refused, also when a hostname resolves to one.</li>

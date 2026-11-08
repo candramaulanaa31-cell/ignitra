@@ -7,6 +7,7 @@ import type {
   Connection,
   ConnectionInput,
   CreatedConnection,
+  DeadLetter,
   Evaluation,
   EvaluationOutcome,
   Flow,
@@ -275,6 +276,29 @@ export class RunsResource {
   /** The full trace: trigger evidence, each condition with its actual value, every step attempt. */
   async get(id: string): Promise<RunDetail> {
     return (await this.#r<{ data: RunDetail }>("GET", `/v1/runs/${seg(id)}`)).data;
+  }
+
+  /** Dead letters: runs whose steps failed for good, newest first. */
+  async deadLetters(options: { limit?: number; before?: string } = {}): Promise<Page<DeadLetter>> {
+    return this.#r<Page<DeadLetter>>("GET", "/v1/dead-letters", { query: { limit: options.limit, before: options.before } });
+  }
+
+  async *iterateDeadLetters(options: { pageSize?: number } = {}): AsyncGenerator<DeadLetter, void, undefined> {
+    let before: string | undefined;
+    for (;;) {
+      const page = await this.deadLetters({ limit: options.pageSize ?? 100, ...(before ? { before } : {}) });
+      yield* page.data;
+      if (!page.next_before) return;
+      before = page.next_before;
+    }
+  }
+
+  /**
+   * Runs a failed or partial run's failed steps again, with the same idempotency keys: steps
+   * that succeeded are not sent twice. The flow must be active (resume it first).
+   */
+  async retry(id: string): Promise<Run> {
+    return (await this.#r<{ data: Run }>("POST", `/v1/runs/${seg(id)}/retry`)).data;
   }
 }
 
