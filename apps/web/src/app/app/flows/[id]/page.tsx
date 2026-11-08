@@ -272,7 +272,7 @@ export default function FlowPage({ params }: { params: Promise<{ id: string }> }
       </div>
 
       {f.status_reason ? <Notice kind="warn">{f.status_reason}</Notice> : null}
-      <div className="row">
+      <div className="row" style={{ justifyContent: "flex-end" }}>
         <ShareTemplate flowId={f.id} flowName={f.name} />
       </div>
       {f.hook_url !== undefined ? (

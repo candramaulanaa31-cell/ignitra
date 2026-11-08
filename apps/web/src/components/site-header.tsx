@@ -1,12 +1,12 @@
 import Link from "next/link";
+import { Brand } from "./brand";
+import { SignalPath } from "./signal";
 
 /** Header of the public pages (landing, templates, docs). */
 export function SiteHeader({ active }: { active?: "templates" | "docs" }) {
   return (
     <header className="topbar">
-      <Link href="/" className="wordmark">
-        IGNITRA<span>_</span>
-      </Link>
+      <Brand />
       <nav className="nav" aria-label="Site">
         <Link href="/templates" aria-current={active === "templates" ? "page" : undefined}>
           Templates
@@ -23,14 +23,5 @@ export function SiteHeader({ active }: { active?: "templates" | "docs" }) {
 }
 
 export function Outline({ lines }: { lines: ReadonlyArray<{ kind: string; text: string }> }) {
-  return (
-    <pre className="json outline">
-      {lines.map((l, i) => (
-        <span key={i}>
-          <span className="kw">{l.kind.padEnd(5)}</span> {l.text}
-          {"\n"}
-        </span>
-      ))}
-    </pre>
-  );
+  return <SignalPath lines={lines} />;
 }

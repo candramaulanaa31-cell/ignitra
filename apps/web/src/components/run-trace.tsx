@@ -31,7 +31,8 @@ export function RunTrace({ run, tz, compact = false }: { run: RunDetail; tz: str
       ) : null}
       {run.status_reason && run.status !== "succeeded" ? <Notice kind={run.status === "failed" ? "error" : "warn"}>{run.status_reason}</Notice> : null}
 
-      <div className="card">
+      <div className="pipeline">
+      <div className="card stage" data-stage="WHEN">
         <div className="card-head">
           <span className="label">Trigger · {label(run.trigger_type)}</span>
           {run.test ? <TestBadge /> : null}
@@ -46,7 +47,8 @@ export function RunTrace({ run, tz, compact = false }: { run: RunDetail; tz: str
         </div>
       </div>
 
-      <div className="card">
+      <div className="connector" />
+      <div className={`card stage ${run.conditions_result.some((c) => !c.passed) ? "stage-fail" : ""}`} data-stage="IF">
         <div className="card-head">
           <span className="label">Conditions</span>
           <span className="small muted">{run.conditions_result.length === 0 ? "none" : `${run.conditions_result.filter((c) => c.passed).length} of ${run.conditions_result.length} passed`}</span>
@@ -79,7 +81,9 @@ export function RunTrace({ run, tz, compact = false }: { run: RunDetail; tz: str
 
       {run.steps.length === 0 && (run.status === "queued" || run.status === "running") ? <p className="muted small">Waiting for a runner…</p> : null}
       {run.steps.map((s) => (
-        <div key={s.step_id} className="card">
+        <div key={s.step_id}>
+        <div className="connector" />
+        <div className={`card stage ${s.status === "failed" ? "stage-fail" : s.status === "succeeded" ? "stage-ok" : ""}`} data-stage="THEN">
           <div className="card-head">
             <span className="row">
               <span className="step-num">{s.position + 1}</span>
@@ -104,7 +108,9 @@ export function RunTrace({ run, tz, compact = false }: { run: RunDetail; tz: str
             {s.output !== null && s.output !== undefined ? <Json value={s.output} collapsed summary={`Output → {{steps.${s.step_id}.…}}`} /> : null}
           </div>
         </div>
+        </div>
       ))}
+      </div>
       {compact ? (
         <Link href={`/app/runs/${run.id}`} className="small">
           Open the full trace ↗

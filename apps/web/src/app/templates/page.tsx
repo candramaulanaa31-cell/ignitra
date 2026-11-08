@@ -15,21 +15,19 @@ export const revalidate = 60;
 function Card({ t }: { t: TemplateCard }) {
   return (
     <Link href={`/templates/${t.slug}`} className="card tpl-card">
-      <div className="card-body stack" style={{ gap: 8 }}>
-        <div className="row" style={{ justifyContent: "space-between" }}>
-          <span className="small muted">{CATEGORY_LABELS[t.category] ?? t.category}</span>
-          <span className="row" style={{ gap: 6 }}>
-            {t.min_plan !== "free" ? <span className="badge plain s-partial">{t.min_plan}</span> : null}
-            {t.official ? null : <span className="badge plain s-live">community</span>}
-          </span>
-        </div>
-        <strong>{t.name}</strong>
-        <span className="small muted">{t.summary}</span>
-        <span className="small mono faint">
-          {label(t.trigger_type)} → {t.action_types.map(label).join(" + ")}
-        </span>
-        {t.uses > 0 ? <span className="small faint">used {t.uses.toLocaleString("en-US")}×</span> : null}
-      </div>
+      <span className="tpl-path mono">
+        {label(t.trigger_type)}
+        <span className="arrow">→</span>
+        {t.action_types.map(label).join(" + ")}
+      </span>
+      <strong className="tpl-name">{t.name}</strong>
+      <span className="tpl-summary">{t.summary}</span>
+      <span className="tpl-meta">
+        <span>{CATEGORY_LABELS[t.category] ?? t.category}</span>
+        {t.min_plan !== "free" ? <span className="badge plain s-partial">{t.min_plan}</span> : null}
+        {t.official ? null : <span className="badge plain s-live">community</span>}
+        {t.uses > 0 ? <span className="faint">used {t.uses.toLocaleString("en-US")}×</span> : null}
+      </span>
     </Link>
   );
 }

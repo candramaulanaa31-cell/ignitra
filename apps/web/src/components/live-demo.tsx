@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { shortHex, when } from "@/lib/format";
+import { SignalPath } from "./signal";
 import { Badge } from "./ui";
 
 export interface DemoData {
@@ -41,33 +42,31 @@ export function LiveDemo({ initial }: { initial: DemoData }) {
   }, []);
 
   return (
-    <section className="card">
+    <section className="card panel live-panel">
       <div className="card-head">
-        <span className="row">
+        <span className="row" style={{ gap: 8 }}>
           <span className="live-dot" aria-hidden="true" />
           <span className="label">Live on Robinhood Chain</span>
         </span>
-        <span className="small muted">
-          {data.stats.runs.toLocaleString("en-US")} runs · median block → done {secs(data.latency_ms.p50)}
+        <span className="panel-stats mono">
+          <span>
+            <strong>{data.stats.runs.toLocaleString("en-US")}</strong> runs
+          </span>
+          <span>
+            <strong>{secs(data.latency_ms.p50)}</strong> block → done
+          </span>
         </span>
       </div>
       <div className="card-body">
-        <pre className="json outline">
-          {data.outline.map((l, i) => (
-            <span key={i}>
-              <span className="kw">{l.kind.padEnd(5)}</span> {l.text}
-              {"\n"}
-            </span>
-          ))}
-        </pre>
+        <SignalPath lines={data.outline} live={data.status === "active"} />
       </div>
       {data.runs.length === 0 ? (
         <div className="card-body muted small">Waiting for the next matching transfer…</div>
       ) : (
         <ul className="feed">
-          {data.runs.map((r, i) => (
+          {data.runs.slice(0, 8).map((r, i) => (
             <li key={`${r.tx_hash ?? i}-${r.at}`}>
-              <span className="mono small faint when">{when(r.at).slice(11, 19)} WIB</span>
+              <span className="mono faint when">{when(r.at).slice(11, 19)}</span>
               <span className="mono ellipsis">
                 {r.tx_hash ? (
                   <a href={`${EXPLORER}/tx/${r.tx_hash}`} target="_blank" rel="noreferrer">
@@ -77,14 +76,15 @@ export function LiveDemo({ initial }: { initial: DemoData }) {
                   (r.summary ?? "—")
                 )}
               </span>
-              <span className="row small" style={{ gap: 6 }}>
-                <Badge status={r.status} text={r.status} />
-                <span className="faint">{secs(r.latency_ms)}</span>
+              <span className="feed-end">
+                <span className="mono faint">{secs(r.latency_ms)}</span>
+                <Badge status={r.status} text={r.status === "succeeded" ? "done" : r.status} />
               </span>
             </li>
           ))}
         </ul>
       )}
+      <div className="panel-foot mono">times in WIB · each row is a real run, refreshed every 5 s</div>
     </section>
   );
 }

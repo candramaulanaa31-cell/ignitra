@@ -9,56 +9,69 @@ import { api, errorText, useApi } from "@/lib/api";
 import { ago, label } from "@/lib/format";
 import type { DeadLetter, FlowSummary } from "@/lib/types";
 
-/** Runs whose steps failed for good: fix the destination, then retry only those steps. */
+/** Runs whose steps failed for good, one row per flow: fix the destination, then retry only those steps. */
 function NeedsAttention() {
   const { me } = useSession();
   const [toast, notify] = useToast();
   const [busy, setBusy] = useState<string | null>(null);
-  const letters = useApi<{ data: DeadLetter[] }>("/v1/dead-letters?limit=5");
+  const letters = useApi<{ data: DeadLetter[] }>("/v1/dead-letters?limit=50");
   const list = letters.data?.data ?? [];
   // Keep the toast mounted: retrying the last dead letter empties the list.
   if (list.length === 0) return toast ? <>{toast}</> : null;
-  const retry = async (d: DeadLetter) => {
-    setBusy(d.run_id);
-    try {
-      await api(`/v1/runs/${d.run_id}/retry`, { method: "POST" });
-      notify("Retrying. Steps that already delivered are not sent again.");
-      await letters.reload();
-    } catch (err) {
-      notify(errorText(err), "error");
-    } finally {
-      setBusy(null);
+  const byFlow = [...list.reduce((m, d) => m.set(d.flow_id, [...(m.get(d.flow_id) ?? []), d]), new Map<string, DeadLetter[]>()).values()];
+  const retry = async (flowId: string, runs: DeadLetter[]) => {
+    setBusy(flowId);
+    let failed = 0;
+    for (const d of runs) {
+      try {
+        await api(`/v1/runs/${d.run_id}/retry`, { method: "POST" });
+      } catch (err) {
+        failed++;
+        if (failed === 1) notify(errorText(err), "error");
+      }
     }
+    if (failed === 0) notify(`Retrying ${runs.length === 1 ? "the run" : `${runs.length} runs`}. Steps that already delivered are not sent again.`);
+    await letters.reload();
+    setBusy(null);
   };
   return (
-    <section className="card" style={{ marginBottom: 16 }}>
+    <section className="card attention" style={{ marginBottom: 16 }}>
       {toast}
       <div className="card-head">
         <span className="label">Needs attention</span>
-        <span className="small muted">steps that failed for good</span>
+        <span className="small muted">steps that failed for good · fix the destination, then retry</span>
       </div>
       <table className="table responsive">
         <tbody>
-          {list.map((d) => (
-            <tr key={d.run_id}>
-              <td className="small">
-                <Link href={`/app/runs/${d.run_id}`}>{d.flow_name}</Link>
-                {d.steps.map((s) => (
-                  <div key={s.step_id} className="failc ellipsis">
-                    {s.step_id} ({label(s.action_type)}): {s.error ?? "failed"}
-                  </div>
-                ))}
-              </td>
-              <td data-label="when" className="small muted nowrap">
-                {ago(d.created_at, Date.now(), me.timezone)}
-              </td>
-              <td className="right">
-                <button type="button" className="btn sm" disabled={busy !== null} onClick={() => void retry(d)}>
-                  {busy === d.run_id ? "Retrying…" : "Retry"}
-                </button>
-              </td>
-            </tr>
-          ))}
+          {byFlow.map((runs) => {
+            const [latest] = runs as [DeadLetter, ...DeadLetter[]];
+            const step = latest.steps[0];
+            return (
+              <tr key={latest.flow_id}>
+                <td>
+                  <Link href={`/app/flows/${latest.flow_id}`} className="strong-link">
+                    {latest.flow_name}
+                  </Link>
+                  {step ? (
+                    <div className="small failc ellipsis">
+                      {step.step_id} ({label(step.action_type)}): {step.error ?? "failed"}
+                    </div>
+                  ) : null}
+                </td>
+                <td data-label="failed runs" className="mono small nowrap">
+                  {runs.length} run{runs.length === 1 ? "" : "s"}
+                </td>
+                <td data-label="latest" className="small muted nowrap">
+                  <Link href={`/app/runs/${latest.run_id}`}>{ago(latest.created_at, Date.now(), me.timezone)}</Link>
+                </td>
+                <td className="right">
+                  <button type="button" className="btn sm" disabled={busy !== null} onClick={() => void retry(latest.flow_id, runs)}>
+                    {busy === latest.flow_id ? "Retrying…" : runs.length === 1 ? "Retry" : `Retry all ${runs.length}`}
+                  </button>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </section>

@@ -267,7 +267,7 @@ export function Builder({ initial }: { initial?: FlowDetail }) {
     <div className="stack" style={{ gap: 0 }}>
       {toast}
       <div className="page-head">
-        <div className="grow" style={{ maxWidth: 560 }}>
+        <div className="grow" style={{ maxWidth: 560, flexBasis: 320 }}>
           <input aria-label="Flow name" placeholder="Name this flow, e.g. Big USDG buys → Telegram" value={draft.name} onChange={(e) => update((d) => ({ ...d, name: e.target.value }))} style={{ fontSize: 16, fontWeight: 600 }} />
           <div className="sub small">
             {flowId ? (
@@ -319,8 +319,9 @@ export function Builder({ initial }: { initial?: FlowDetail }) {
         </Notice>
       ) : null}
 
+      <div className="pipeline">
       {/* ---- trigger ---- */}
-      <section className="card" style={{ marginTop: 12 }}>
+      <section className="card stage" data-stage="WHEN">
         <div className="card-head">
           <span className="label">Trigger</span>
           <span className="small muted">{triggerItem?.description}</span>
@@ -375,7 +376,7 @@ export function Builder({ initial }: { initial?: FlowDetail }) {
       <div className="connector" />
 
       {/* ---- conditions ---- */}
-      <section className="card">
+      <section className="card stage" data-stage="IF">
         <div className="card-head">
           <span className="label">Conditions</span>
           <span className="small muted">optional filters on the trigger data</span>
@@ -393,7 +394,7 @@ export function Builder({ initial }: { initial?: FlowDetail }) {
         return (
           <div key={`${a.step_id}-${i}`}>
             <div className="connector" />
-            <section className="card">
+            <section className="card stage" data-stage="THEN">
               <div className="card-head">
                 <span className="row">
                   <span className="step-num">{i + 1}</span>
@@ -431,7 +432,7 @@ export function Builder({ initial }: { initial?: FlowDetail }) {
         );
       })}
       <div className="connector" />
-      <section className="card">
+      <section className="card stage stage-add" data-stage="+">
         <div className="card-head">
           <span className="label">Add an action</span>
           <span className="small muted">actions run in order; later ones can use earlier outputs</span>
@@ -448,7 +449,7 @@ export function Builder({ initial }: { initial?: FlowDetail }) {
 
       {/* ---- settings ---- */}
       <div className="connector" />
-      <section className="card">
+      <section className="card stage stage-set" data-stage="SET">
         <div className="card-head">
           <span className="label">Settings</span>
         </div>
@@ -489,6 +490,7 @@ export function Builder({ initial }: { initial?: FlowDetail }) {
           ) : null}
         </div>
       </section>
+      </div>
 
       {testRunId ? (
         <section className="card" style={{ marginTop: 16 }}>

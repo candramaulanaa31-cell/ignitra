@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
+import { Brand } from "@/components/brand";
 import { SessionGate, useSession } from "@/components/session";
 import { shortHex } from "@/lib/format";
 
@@ -21,9 +22,7 @@ function Shell({ children }: { children: ReactNode }) {
   return (
     <>
       <header className="topbar">
-        <Link href="/" className="wordmark">
-          IGNITRA<span>_</span>
-        </Link>
+        <Brand href="/app" />
         <nav className="nav" aria-label="App">
           {NAV.map((n) => (
             <Link key={n.href} href={n.href} aria-current={n.match(path) ? "page" : undefined}>
@@ -32,11 +31,9 @@ function Shell({ children }: { children: ReactNode }) {
           ))}
         </nav>
         <div className="account">
-          <span className="badge plain s-skip" title="Plan">
-            {me.plan}
-          </span>
-          <span className="mono addr-label" title={me.address}>
-            {shortHex(me.address)}
+          <span className="account-id" title={me.address}>
+            <span className="plan-tag">{me.plan}</span>
+            <span className="mono addr-label">{shortHex(me.address)}</span>
           </span>
           <button type="button" className="btn sm ghost" onClick={() => void signOut()}>
             Sign out
