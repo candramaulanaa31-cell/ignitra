@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Brand } from "./brand";
+import { ChainHead } from "./chain-head";
 import { SignalPath } from "./signal";
 
 /** Header of the public pages (landing, templates, docs). */
@@ -15,6 +16,7 @@ export function SiteHeader({ active }: { active?: "templates" | "docs" }) {
           Docs
         </Link>
       </nav>
+      <ChainHead />
       <Link href="/app" className="btn primary sm">
         Open the app
       </Link>

@@ -8,6 +8,11 @@
  * Status colors keep their meaning everywhere: succeeded green · partial amber · failed red ·
  * skipped gray · queued/running blue · TEST violet. Chain data (addresses, hashes, blocks,
  * payloads) is monospace with tabular figures. Text colors meet WCAG AA on their surfaces.
+ *
+ * Motion follows the product's mechanics and nothing else: a spark travels a flow when a real run
+ * happens, block heights roll when the chain moves, a wire burns as you read how a flow works.
+ * No floating, no parallax, no bounce, and no content waits for an animation to be seen.
+ * Reduced motion turns all of it off.
  */
 :root {
   --bg: #f4f0e8;
@@ -49,6 +54,17 @@
   --radius: 8px;
   --radius-lg: 12px;
   --header-h: 60px;
+
+  /* Motion: one decisive deceleration for arrivals, one symmetric curve for travel. */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-travel: cubic-bezier(0.65, 0, 0.35, 1);
+  --step-ms: 340ms;
+
+  /* Machined edges: a light top edge fading down, like turned metal catching the light. */
+  --edge-hi: #ffffff;
+  --edge-lo: #d6ccbe;
+  --bevel: rgb(255 255 255 / 75%);
+  --haze: rgb(255 106 19 / 9%);
   color-scheme: light;
 }
 
@@ -82,6 +98,10 @@
     --live-bg: #131c2d;
     --test: #c6a6ff;
     --test-bg: #21192e;
+    --edge-hi: rgb(255 238 220 / 17%);
+    --edge-lo: rgb(255 238 220 / 5%);
+    --bevel: rgb(255 238 220 / 4.5%);
+    --haze: rgb(255 96 20 / 14%);
     color-scheme: dark;
   }
 }
@@ -115,6 +135,18 @@ body::before {
 
 ::selection {
   background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 a {
@@ -284,6 +316,72 @@ strong {
   background: var(--surface);
 }
 
+.chain-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.chain-label {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.chain-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--faint);
+}
+
+.chain-head.is-live .chain-dot {
+  background: var(--ok);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent);
+}
+
+/* Odometer: each digit is a strip of 0–9 that rolls to its value. */
+.odo {
+  display: inline-flex;
+  vertical-align: bottom;
+}
+
+.odo-face {
+  display: inline-flex;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+}
+
+.odo-digit {
+  display: inline-block;
+  height: 1.25em;
+  line-height: 1.25em;
+  overflow: hidden;
+}
+
+.odo-strip {
+  display: flex;
+  flex-direction: column;
+  transition: transform 900ms var(--ease-out);
+}
+
+.odo-strip > span,
+.odo-sep {
+  height: 1.25em;
+  line-height: 1.25em;
+  text-align: center;
+}
+
 .plan-tag {
   font-family: var(--font-mono);
   font-size: 10px;
@@ -372,6 +470,7 @@ strong {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
+  box-shadow: inset 0 1px 0 var(--bevel);
 }
 
 .card-head {
@@ -753,7 +852,12 @@ input[type="checkbox"] {
     background 0.12s,
     border-color 0.12s,
     box-shadow 0.12s,
-    filter 0.12s;
+    filter 0.12s,
+    transform 0.12s;
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
 }
 
 .btn:hover {
@@ -775,6 +879,34 @@ input[type="checkbox"] {
   box-shadow:
     inset 0 1px 0 rgb(255 255 255 / 30%),
     0 1px 2px rgb(0 0 0 / 18%);
+}
+
+.btn.primary {
+  position: relative;
+  overflow: hidden;
+}
+
+/* Hovering the ignition button sends a spark along its lower edge, like a signal down a wire. */
+.btn.primary::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 40%;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, #fff1d2 60%, transparent);
+  transform: translateX(-110%);
+  pointer-events: none;
+}
+
+.btn.primary:hover::after {
+  animation: edge-spark 900ms var(--ease-travel);
+}
+
+@keyframes edge-spark {
+  to {
+    transform: translateX(260%);
+  }
 }
 
 .btn.primary:hover {
@@ -1021,6 +1153,7 @@ a.chip:hover {
 }
 
 .signal-step {
+  --i: 0;
   position: relative;
   display: grid;
   grid-template-columns: 46px minmax(0, 1fr);
@@ -1078,36 +1211,78 @@ a.chip:hover {
   overflow-wrap: anywhere;
 }
 
-/* A running flow: a spark travels down the wire. */
-.signal.live::after {
+/*
+ * A real run happened: the signal burns down the wire one segment per step, each node flares as
+ * the heat reaches it, and the actions' labels catch. Segments are per step, so the timing lands
+ * on the nodes however the text wraps.
+ */
+.signal-step:not(:last-child)::after {
   content: "";
   position: absolute;
-  left: 4px;
-  top: 8px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #ffd08a;
-  box-shadow:
-    0 0 0 3px rgb(255 122 36 / 28%),
-    0 0 14px 3px rgb(255 106 19 / 70%);
-  animation: spark 2.8s cubic-bezier(0.55, 0, 0.45, 1) infinite;
+  left: 7px;
+  top: 21px;
+  bottom: -13px;
+  width: 2px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, #ff5a1a, #ffb547 85%, #fff1d2);
+  box-shadow: 0 0 10px 1px rgb(255 120 30 / 55%);
+  transform: scaleY(0);
+  transform-origin: top;
+  z-index: 1;
 }
 
-@keyframes spark {
+.signal-step::before {
+  z-index: 2;
+}
+
+.signal.pulsing .signal-step:not(:last-child)::after {
+  animation: wire-burn calc(var(--step-ms) * 2.4) var(--ease-travel);
+  animation-delay: calc(var(--i) * var(--step-ms));
+}
+
+.signal.pulsing .signal-step::before {
+  animation: node-flare 900ms var(--ease-out);
+  animation-delay: calc(var(--i) * var(--step-ms));
+}
+
+.signal.pulsing .k-then .signal-kind {
+  animation: kind-catch 1400ms var(--ease-out);
+  animation-delay: calc(var(--i) * var(--step-ms));
+}
+
+@keyframes wire-burn {
   0% {
-    top: 8px;
-    opacity: 0;
-  }
-  12% {
+    transform: scaleY(0);
     opacity: 1;
   }
-  82% {
+  42% {
+    transform: scaleY(1);
     opacity: 1;
   }
   100% {
-    top: calc(100% - 18px);
+    transform: scaleY(1);
     opacity: 0;
+  }
+}
+
+@keyframes node-flare {
+  0% {
+    border-color: #ffb547;
+    box-shadow:
+      0 0 0 0 rgb(255 140 50 / 70%),
+      0 0 14px 2px rgb(255 106 19 / 60%);
+  }
+  100% {
+    box-shadow:
+      0 0 0 10px rgb(255 140 50 / 0%),
+      0 0 0 0 rgb(255 106 19 / 0%);
+  }
+}
+
+@keyframes kind-catch {
+  0% {
+    color: #ffd08a;
+    text-shadow: 0 0 12px rgb(255 140 40 / 80%);
   }
 }
 
@@ -1165,6 +1340,7 @@ pre.outline .kw {
 .stage::before {
   content: "";
   position: absolute;
+  z-index: 2;
   left: -40px;
   top: 16px;
   width: 12px;
@@ -1182,6 +1358,7 @@ pre.outline .kw {
   width: 36px;
   top: 36px;
   padding: 3px 0;
+  z-index: 2;
   /* Sits on the wire: the page color masks the rail behind the label. */
   background: var(--bg);
   text-align: center;
@@ -1231,6 +1408,43 @@ pre.outline .kw {
 .stage-fail::before {
   background: var(--fail) !important;
   border-color: transparent !important;
+}
+
+/* A run trace opens with its path burning from the trigger to the last step it reached. */
+.pipeline.trace::after {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  left: 17px;
+  top: 22px;
+  bottom: 22px;
+  width: 2px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, var(--text), var(--accent));
+  transform-origin: top;
+  animation: trace-burn 1400ms var(--ease-travel) 150ms both;
+}
+
+.pipeline.trace.trace-failed::after {
+  background: linear-gradient(180deg, var(--text), var(--fail));
+}
+
+@keyframes trace-burn {
+  from {
+    transform: scaleY(0);
+  }
+}
+
+.pipeline:not(.trace) > .stage,
+.pipeline:not(.trace) > div > .stage {
+  animation: stage-in 460ms var(--ease-out) both;
+}
+
+@keyframes stage-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
 }
 
 /* ---- landing ------------------------------------------------------------------------------ */
@@ -1349,14 +1563,104 @@ pre.outline .kw {
   font-size: 14px;
 }
 
+/* The live demo renders the panel and the tape: both become cells of the hero grid. */
 .hero-panel {
-  min-width: 0;
+  display: contents;
+}
+
+/* Heat haze behind the instrument. */
+.hero::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  right: -8%;
+  top: 30%;
+  width: 64%;
+  height: 64%;
+  background: radial-gradient(closest-side, var(--haze), transparent);
+  pointer-events: none;
+}
+
+.tape {
+  grid-column: 1 / -1;
+  position: relative;
+  margin-top: 52px;
+  overflow: hidden;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 7%, #000 93%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 7%, #000 93%, transparent);
+}
+
+.tape-track {
+  display: flex;
+  width: max-content;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  animation: tape 90s linear infinite;
+}
+
+.tape:hover .tape-track,
+.tape:focus-within .tape-track {
+  animation-play-state: paused;
+}
+
+.tape li {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 34px 13px 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* Each run is an action that fired: the spark of the mark. */
+.tape li::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  transform: rotate(45deg);
+  background: var(--heat);
+  flex-shrink: 0;
+}
+
+.tape a {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.tape a:hover {
+  color: var(--accent-strong);
+}
+
+.tape-block,
+.tape-took {
+  color: var(--faint);
+}
+
+@keyframes tape {
+  to {
+    transform: translateX(-50%);
+  }
 }
 
 .panel {
   position: relative;
   overflow: hidden;
   box-shadow: var(--shadow);
+}
+
+.panel,
+.schematic,
+.instrument,
+.tpl-card {
+  border-color: transparent;
+  background:
+    linear-gradient(var(--surface), var(--surface)) padding-box,
+    linear-gradient(180deg, var(--edge-hi), var(--edge-lo) 55%) border-box;
 }
 
 .panel::before {
@@ -1406,6 +1710,28 @@ pre.outline .kw {
 
 .feed li:last-child {
   border-bottom: 0;
+}
+
+.feed li.fresh {
+  animation:
+    row-arrive 700ms var(--ease-out) both,
+    row-heat 2600ms ease-out both;
+}
+
+@keyframes row-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
+@keyframes row-heat {
+  from {
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+  to {
+    background: transparent;
+  }
 }
 
 .feed li a {
@@ -1469,6 +1795,7 @@ pre.outline .kw {
 }
 
 .schematic {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   border: 1px solid var(--border);
@@ -1485,17 +1812,118 @@ pre.outline .kw {
   border-left: 1px solid var(--border);
 }
 
-/* The wire passes through the dividers. */
+/* The wire runs along the top edge; its nodes sit where the columns meet. */
+.schematic-wire {
+  position: absolute;
+  z-index: 1;
+  left: 12px;
+  right: 12px;
+  top: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--heat);
+  transform-origin: left;
+  pointer-events: none;
+}
+
 .schematic-col + .schematic-col::before {
   content: "";
   position: absolute;
+  z-index: 2;
   left: -6px;
-  top: 30px;
-  width: 10px;
-  height: 10px;
+  top: -6px;
+  width: 11px;
+  height: 11px;
   border-radius: 50%;
   background: var(--heat);
-  box-shadow: 0 0 0 4px var(--surface);
+  box-shadow: 0 0 0 4px var(--bg);
+}
+
+/* Where supported, the wire burns from WHEN to THEN as the section scrolls into view. */
+@supports (animation-timeline: view()) {
+  .schematic {
+    view-timeline: --schematic block;
+  }
+  .schematic-wire {
+    animation: wire-draw linear both;
+    animation-timeline: --schematic;
+    animation-range: cover 12% cover 48%;
+  }
+  .schematic-col:nth-child(3)::before {
+    animation: ignite-at-third linear both;
+    animation-timeline: --schematic;
+    animation-range: cover 12% cover 48%;
+  }
+  .schematic-col:nth-child(4)::before {
+    animation: ignite-at-two-thirds linear both;
+    animation-timeline: --schematic;
+    animation-range: cover 12% cover 48%;
+  }
+  /* Labels only change color: IF and THEN light up as the heat reaches their column. */
+  .schematic-col:nth-child(3) .col-kind {
+    animation: label-at-third linear both;
+    animation-timeline: --schematic;
+    animation-range: cover 12% cover 48%;
+  }
+  .schematic-col:nth-child(4) .col-kind {
+    animation: label-at-two-thirds linear both;
+    animation-timeline: --schematic;
+    animation-range: cover 12% cover 48%;
+  }
+}
+
+@keyframes label-at-third {
+  0%,
+  31% {
+    color: var(--faint);
+  }
+  35%,
+  100% {
+    color: var(--accent-strong);
+  }
+}
+
+@keyframes label-at-two-thirds {
+  0%,
+  64% {
+    color: var(--faint);
+  }
+  68%,
+  100% {
+    color: var(--accent-strong);
+  }
+}
+
+@keyframes wire-draw {
+  from {
+    transform: scaleX(0);
+  }
+}
+
+@keyframes ignite-at-third {
+  0%,
+  31% {
+    background: var(--surface-3);
+    color: var(--faint);
+  }
+  35%,
+  100% {
+    background: var(--heat);
+    color: var(--accent-strong);
+  }
+}
+
+@keyframes ignite-at-two-thirds {
+  0%,
+  64% {
+    background: var(--surface-3);
+    color: var(--faint);
+  }
+  68%,
+  100% {
+    background: var(--heat);
+    color: var(--accent-strong);
+  }
 }
 
 .col-kind {
@@ -1558,6 +1986,8 @@ pre.outline .kw {
 }
 
 .tpl-card {
+  position: relative;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1574,10 +2004,30 @@ pre.outline .kw {
 }
 
 .tpl-card:hover {
-  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
   color: var(--text);
   transform: translateY(-1px);
   box-shadow: var(--shadow);
+  background:
+    linear-gradient(var(--surface), var(--surface)) padding-box,
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 65%, transparent), var(--edge-lo) 70%) border-box;
+}
+
+/* Hover heats the card's top edge from the trigger side. */
+.tpl-card::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  background: var(--heat);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 520ms var(--ease-out);
+}
+
+.tpl-card:hover::after {
+  transform: scaleX(1);
 }
 
 .tpl-path {
@@ -1587,8 +2037,14 @@ pre.outline .kw {
 }
 
 .tpl-path .arrow {
+  display: inline-block;
   color: var(--accent-strong);
   margin: 0 6px;
+  transition: transform 320ms var(--ease-out);
+}
+
+.tpl-card:hover .tpl-path .arrow {
+  transform: translateX(3px);
 }
 
 .tpl-name {
@@ -1720,19 +2176,67 @@ a.chip {
   overflow-wrap: anywhere;
 }
 
-.site-footer {
+.statement {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 0.6fr);
+  gap: 48px;
+  align-items: end;
+  padding: 104px 0 96px;
+  border-top: 1px solid var(--border);
+}
+
+.statement-line {
+  margin: 0;
+  font-size: clamp(44px, 6.1vw, 92px);
+  font-variation-settings: "wdth" 116;
+  font-weight: 760;
+  line-height: 0.95;
+  letter-spacing: -0.045em;
+}
+
+.statement-side {
   display: flex;
-  align-items: center;
-  gap: 20px;
-  flex-wrap: wrap;
-  padding: 28px 0 8px;
+  flex-direction: column;
+  gap: 22px;
+  padding-bottom: 12px;
+}
+
+.statement-side p {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.6;
+  max-width: 40ch;
+}
+
+.site-footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) repeat(3, minmax(0, 1fr));
+  gap: 32px;
+  padding: 44px 0 12px;
   border-top: 1px solid var(--border);
   font-size: 13px;
 }
 
+.footer-brand p {
+  margin: 14px 0 0;
+  max-width: 34ch;
+  line-height: 1.6;
+}
+
 .site-footer nav {
-  margin-left: auto;
-  gap: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.site-footer h4 {
+  margin: 0 0 4px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--faint);
 }
 
 .site-footer nav a {
@@ -1871,11 +2375,35 @@ footer.site {
   .hero-title {
     margin-bottom: 28px;
   }
+  .statement {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 28px;
+    padding: 72px 0 64px;
+  }
+  .site-footer {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .footer-brand {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 560px) {
   .tpl-grid.three {
     grid-template-columns: minmax(0, 1fr);
+  }
+  /* Headers keep the brand, the nav and the way in; the block height lives on the landing. */
+  .topbar > .chain-head,
+  .account .chain-head {
+    display: none;
+  }
+  /* The nav scrolls sideways: fade its edge so that reads as "more". */
+  .nav {
+    -webkit-mask-image: linear-gradient(90deg, #000 82%, transparent);
+    mask-image: linear-gradient(90deg, #000 82%, transparent);
+  }
+  .site-footer {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -1894,6 +2422,12 @@ footer.site {
   /* Room for the nav: the plan and wallet stay one tap away in Settings. */
   .account-id {
     display: none;
+  }
+  .chain-label {
+    display: none;
+  }
+  .topbar .chain-head {
+    padding: 4px 8px;
   }
   .grid2,
   .grid3 {
@@ -1956,7 +2490,8 @@ footer.site {
   .pipeline {
     padding-left: 28px;
   }
-  .pipeline::before {
+  .pipeline::before,
+  .pipeline.trace::after {
     left: 6px;
   }
   .stage::before {
@@ -1995,17 +2530,29 @@ footer.site {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .signal.live::after {
-    display: none;
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
-  .live-dot {
-    animation: none;
+  /* Scroll-linked and looping pieces: shown in their final state, still. */
+  .schematic-wire,
+  .schematic-col::before,
+  .schematic-col .col-kind,
+  .tape-track {
+    animation: none !important;
   }
-  .tpl-card,
-  .btn {
-    transition: none;
+  .tape {
+    overflow-x: auto;
+    -webkit-mask-image: none;
+    mask-image: none;
   }
-  .tpl-card:hover {
+  .tpl-card:hover,
+  .btn:active:not(:disabled) {
     transform: none;
   }
 }

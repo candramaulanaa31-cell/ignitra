@@ -126,6 +126,7 @@ export default async function Home() {
             <p>Three parts, always in this order. Pick them from the catalog; nothing to code.</p>
           </header>
           <div className="schematic">
+            <div className="schematic-wire" aria-hidden="true" />
             <div className="schematic-col">
               <span className="col-kind">WHEN</span>
               <h3>Something happens</h3>
@@ -209,15 +210,50 @@ export default async function Home() {
             <Gauge ok={null} label="Chain" value={health ? `${health.chain.name} · ${health.chain.id}` : "Robinhood Chain · 4663"} />
           </div>
         </section>
+        <section className="statement" aria-label="Get started">
+          <p className="statement-line">
+            One event.
+            <br />
+            <span className="heat-under">Every action.</span>
+          </p>
+          <div className="statement-side">
+            <p className="muted">Start from a template, or build a flow from the catalog. Testing a flow never counts against your plan.</p>
+            <div className="row">
+              <Link href="/templates" className="btn primary lg">
+                Start from a template
+              </Link>
+              <Link href="/app/flows/new" className="btn lg">
+                Build a flow
+              </Link>
+            </div>
+          </div>
+        </section>
       </main>
       <footer className="site-footer">
-        <Brand />
-        <span className="muted">One event. Every action.</span>
-        <nav className="row" aria-label="Footer">
+        <div className="footer-brand">
+          <Brand />
+          <p className="muted">Onchain automation for Robinhood Chain. No bot to run; every run explains itself.</p>
+        </div>
+        <nav aria-label="Product">
+          <h4>Product</h4>
           <Link href="/templates">Templates</Link>
+          <Link href="/app/flows/new">Build a flow</Link>
+          <Link href="/app">Open the app</Link>
+        </nav>
+        <nav aria-label="Developers">
+          <h4>Developers</h4>
           <Link href="/docs">Docs</Link>
           <Link href="/docs/api">API</Link>
           <Link href="/docs/sdk">SDK</Link>
+          <Link href="/docs/webhooks">Webhooks</Link>
+        </nav>
+        <nav aria-label="Chain">
+          <h4>Chain</h4>
+          <a href="https://robinhoodchain.blockscout.com" target="_blank" rel="noreferrer">
+            Robinhood Chain · 4663
+          </a>
+          <a href="#status">System status</a>
+          <Link href="/docs/onchain">Onchain actions</Link>
         </nav>
       </footer>
     </div>

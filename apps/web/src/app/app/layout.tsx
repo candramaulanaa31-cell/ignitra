@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { Brand } from "@/components/brand";
+import { ChainHead } from "@/components/chain-head";
 import { SessionGate, useSession } from "@/components/session";
 import { shortHex } from "@/lib/format";
 
@@ -31,6 +32,7 @@ function Shell({ children }: { children: ReactNode }) {
           ))}
         </nav>
         <div className="account">
+          <ChainHead />
           <span className="account-id" title={me.address}>
             <span className="plan-tag">{me.plan}</span>
             <span className="mono addr-label">{shortHex(me.address)}</span>

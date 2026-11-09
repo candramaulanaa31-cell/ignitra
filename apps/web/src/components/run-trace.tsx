@@ -31,7 +31,7 @@ export function RunTrace({ run, tz, compact = false }: { run: RunDetail; tz: str
       ) : null}
       {run.status_reason && run.status !== "succeeded" ? <Notice kind={run.status === "failed" ? "error" : "warn"}>{run.status_reason}</Notice> : null}
 
-      <div className="pipeline">
+      <div className={`pipeline trace${run.status === "failed" ? " trace-failed" : ""}`}>
       <div className="card stage" data-stage="WHEN">
         <div className="card-head">
           <span className="label">Trigger · {label(run.trigger_type)}</span>
