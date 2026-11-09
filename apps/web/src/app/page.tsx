@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ACTION_TYPES, OFFICIAL_TEMPLATES, TRIGGER_TYPES, formatInTimeZone } from "@ignitra/core";
 import { Brand } from "@/components/brand";
+import { IgnitionFieldHero } from "@/components/ignition-field";
 import { LiveDemo, type DemoData } from "@/components/live-demo";
 import { SignalPath } from "@/components/signal";
 import { SiteHeader } from "@/components/site-header";
@@ -62,46 +63,54 @@ export default async function Home() {
   const triggers = TRIGGER_TYPES.filter((t) => LABELS[t]).map(label);
   const actions = ACTION_TYPES.filter((a) => LABELS[a]).map(label);
   const listener = health?.listener && health.listener.status !== "unknown" ? health.listener : null;
+  // The field's ports: the actions of the live flow (or of the example), by name.
+  const fieldActions = [...new Set((demo?.data.outline ?? EXAMPLE).filter((l) => l.kind === "THEN").map((l) => l.text.split(" → ")[0] ?? l.text))];
 
   return (
     <div className="wrap">
       <SiteHeader />
       <main className="landing">
-        <section className="hero">
-          <div className="hero-title">
-            <p className="eyebrow">Onchain automation · Robinhood Chain</p>
-            <h1 className="display">
-              When the chain moves,
-              <br />
-              <span className="heat-under">everything follows.</span>
-            </h1>
+        <IgnitionFieldHero actions={fieldActions} initialRuns={demo?.data.stats.runs ?? 0}>
+          <p className="eyebrow">Onchain automation · Robinhood Chain</p>
+          <h1 className="display">
+            When the chain moves,
+            <br />
+            <span className="heat-under">everything follows.</span>
+          </h1>
+          <p className="lede">
+            IGNITRA turns anything that happens on Robinhood Chain into actions in the tools you already use: Telegram, webhooks, email, Google Sheets, any HTTP API, push notifications. No bot to run, and every run explains itself.
+          </p>
+          <div className="row hero-cta">
+            <Link href="/templates" className="btn primary lg">
+              Start from a template
+            </Link>
+            <Link href="/app/flows/new" className="btn lg">
+              Build a flow
+            </Link>
+            <Link href="/docs" className="btn ghost">
+              Read the docs →
+            </Link>
           </div>
-          <div className="hero-copy">
-            <p className="lede">
-              IGNITRA turns anything that happens on Robinhood Chain into actions in the tools you already use: Telegram, webhooks, email, Google Sheets, any HTTP API, push notifications. No bot to run, and every run explains itself.
+          <ul className="hero-facts">
+            <li>
+              <strong>{triggers.length}</strong> triggers
+            </li>
+            <li>
+              <strong>{actions.length}</strong> actions
+            </li>
+            <li>
+              <strong>1</strong> run per event, ever
+            </li>
+          </ul>
+        </IgnitionFieldHero>
+
+        <section className="live-row" aria-labelledby="live">
+          <div className="live-intro">
+            <p className="eyebrow">Live instrument</p>
+            <h2 id="live">Each ember above is one of these runs.</h2>
+            <p>
+              A real flow on Robinhood Chain mainnet, read the way you would build it. When a transfer matches, the run lands here within seconds: the transaction, how long it took from its block, and its result.
             </p>
-            <div className="row hero-cta">
-              <Link href="/templates" className="btn primary lg">
-                Start from a template
-              </Link>
-              <Link href="/app/flows/new" className="btn lg">
-                Build a flow
-              </Link>
-              <Link href="/docs" className="btn ghost">
-                Read the docs →
-              </Link>
-            </div>
-            <ul className="hero-facts">
-              <li>
-                <strong>{triggers.length}</strong> triggers
-              </li>
-              <li>
-                <strong>{actions.length}</strong> actions
-              </li>
-              <li>
-                <strong>1</strong> run per event, ever
-              </li>
-            </ul>
           </div>
           <div className="hero-panel">
             {demo?.data ? (

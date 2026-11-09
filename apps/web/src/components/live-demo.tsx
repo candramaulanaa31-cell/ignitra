@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { shortHex, when } from "@/lib/format";
+import { RUNS_EVENT, type RunsSignal } from "./ignition-field";
 import { Odometer } from "./odometer";
 import { SignalPath } from "./signal";
 import { Badge } from "./ui";
@@ -21,6 +22,9 @@ type Run = DemoData["runs"][number];
 const EXPLORER = "https://robinhoodchain.blockscout.com";
 const secs = (ms: number | null) => (ms === null ? "—" : `${(ms / 1000).toFixed(1)} s`);
 const runId = (r: Run) => `${r.tx_hash ?? "—"}:${r.at}`;
+/** What the hero's field shows on a port when this run reaches it: the amount, two decimals. */
+const fieldLabel = (r: Run) => (r.summary?.split(" · ")[0] ?? shortHex(r.tx_hash ?? "")).replace(/(\.\d{2})\d+/, "$1");
+const signal = (runs: Run[], total: number) => window.dispatchEvent(new CustomEvent<RunsSignal>(RUNS_EVENT, { detail: { labels: runs.map(fieldLabel), total } }));
 
 /** Recent real runs flowing past, under the hero. Hover (or focus) holds the tape still to click through. */
 function ChainTape({ runs }: { runs: Run[] }) {
@@ -68,18 +72,25 @@ export function LiveDemo({ initial }: { initial: DemoData }) {
         .then((r) => (r.ok ? (r.json() as Promise<{ data: DemoData }>) : null))
         .then((r) => {
           if (!r) return;
-          const added = r.data.runs.map(runId).filter((id) => !seen.current.has(id));
+          const addedRuns = r.data.runs.filter((run) => !seen.current.has(runId(run)));
+          const added = addedRuns.map(runId);
           for (const id of added) seen.current.add(id);
           setData(r.data);
           if (added.length > 0) {
             setFresh(new Set(added));
             setPulse((p) => p + 1);
+            signal(addedRuns, r.data.stats.runs);
           }
         })
         .catch(() => {});
     };
-    // First impression: replay the newest real run once, then follow the chain.
-    const first = setTimeout(() => setPulse((p) => (p === 0 && initial.runs.length > 0 ? 1 : p)), 900);
+    // First impression: replay the newest real run once (here and in the hero's field), then follow the chain.
+    const first = setTimeout(() => {
+      const newest = initial.runs[0];
+      if (!newest) return;
+      setPulse((p) => (p === 0 ? 1 : p));
+      signal([newest], initial.stats.runs);
+    }, 900);
     refresh();
     const t = setInterval(refresh, 5000);
     document.addEventListener("visibilitychange", refresh);

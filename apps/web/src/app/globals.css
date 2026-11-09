@@ -112,6 +112,8 @@
 
 html,
 body {
+  /* Full-bleed sections never scroll sideways; clip (unlike hidden) keeps the header sticky. */
+  overflow-x: clip;
   margin: 0;
   background: var(--bg);
   color: var(--text);
@@ -1451,38 +1453,195 @@ pre.outline .kw {
 
 .landing {
   max-width: none;
-  /* The hero's schematic paper bleeds past the column: clip it (clip keeps the header sticky). */
-  overflow-x: clip;
 }
 
-.hero {
+/*
+ * The ignition field: a full-bleed hero. Canvases draw the chain (the horizon), activity rising
+ * into orbit around IGNITRA, and real runs igniting toward their actions; the pitch sits on a
+ * soft scrim at the left, the console floats at the bottom.
+ */
+.field-hero {
+  --gutter: max(24px, calc((100vw - 1152px) / 2));
   position: relative;
   isolation: isolate;
   display: grid;
-  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
-  column-gap: 56px;
-  align-items: start;
-  padding: 36px 0 72px;
+  align-content: center;
+  min-height: clamp(620px, calc(100svh - var(--header-h)), 860px);
+  margin: -24px calc(50% - 50vw) 0;
+  padding: 0 var(--gutter);
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+  background: radial-gradient(80% 70% at 75% 50%, color-mix(in srgb, var(--accent) 5%, transparent), transparent 70%), var(--bg);
 }
 
-/* The headline runs the full width; pitch and live panel share the row below it. */
-.hero-title {
-  grid-column: 1 / -1;
-  margin-bottom: 40px;
-}
-
-/* Schematic paper behind the hero, fading out. */
-.hero::before {
+/* Schematic paper under the field. */
+.field-hero::before {
   content: "";
   position: absolute;
-  inset: -24px -48px 0;
-  z-index: -1;
+  inset: 0;
+  z-index: -2;
   pointer-events: none;
   background-image:
     linear-gradient(var(--grid) 1px, transparent 1px),
     linear-gradient(90deg, var(--grid) 1px, transparent 1px);
   background-size: 44px 44px;
-  mask-image: radial-gradient(ellipse 70% 80% at 28% 30%, #000 10%, transparent 75%);
+  -webkit-mask-image: radial-gradient(ellipse 80% 70% at 60% 45%, #000 20%, transparent 80%);
+  mask-image: radial-gradient(ellipse 80% 70% at 60% 45%, #000 20%, transparent 80%);
+}
+
+.field-layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: -1;
+  pointer-events: none;
+}
+
+.field-copy {
+  position: relative;
+  max-width: min(780px, 66%);
+  padding: 32px 0 132px;
+}
+
+/* A soft scrim keeps the pitch readable over the swarm. */
+.field-copy::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: -48px -120px -40px -80px;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--bg) 92%, transparent) 55%, transparent);
+  pointer-events: none;
+}
+
+.field-copy .display {
+  font-size: clamp(40px, 4.3vw, 62px);
+}
+
+.field-copy .lede {
+  margin-top: 24px;
+}
+
+.field-console {
+  position: absolute;
+  z-index: 2;
+  left: 50%;
+  bottom: 26px;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  padding: 5px 5px 5px 15px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background:
+    linear-gradient(color-mix(in srgb, var(--surface) 80%, transparent), color-mix(in srgb, var(--surface) 80%, transparent)) padding-box,
+    linear-gradient(180deg, var(--edge-hi), var(--edge-lo)) border-box;
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.console-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent-strong);
+}
+
+.console-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 14px;
+  border-left: 1px solid var(--border);
+}
+
+.console-key {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.console-toggle {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+  transition:
+    border-color 0.12s,
+    color 0.12s,
+    background 0.12s;
+}
+
+.console-toggle:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+/* Paused: the play control is the way back in, so it carries the heat. */
+.console-toggle[aria-pressed="true"] {
+  background: var(--heat-fill);
+  border-color: #e1531a;
+  color: var(--accent-text);
+}
+
+.field-legend {
+  position: absolute;
+  right: var(--gutter);
+  bottom: 34px;
+  margin: 0;
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--faint);
+}
+
+/* The live instrument, right under the field. */
+.live-row {
+  display: grid;
+  grid-template-columns: minmax(0, 0.78fr) minmax(0, 1.22fr);
+  column-gap: 56px;
+  align-items: start;
+  padding: 72px 0 0;
+}
+
+.live-intro .eyebrow {
+  margin: 8px 0 18px;
+}
+
+.live-intro h2 {
+  font-family: var(--font-sans);
+  font-variation-settings: "wdth" 112;
+  font-size: clamp(26px, 3vw, 34px);
+  font-weight: 720;
+  letter-spacing: -0.025em;
+  line-height: 1.1;
+  text-transform: none;
+  color: var(--text);
+  margin: 0;
+}
+
+.live-intro p:last-child {
+  margin-top: 14px;
+  max-width: 46ch;
+  color: var(--muted);
+  font-size: 15.5px;
+  line-height: 1.6;
 }
 
 .eyebrow {
@@ -1563,22 +1722,9 @@ pre.outline .kw {
   font-size: 14px;
 }
 
-/* The live demo renders the panel and the tape: both become cells of the hero grid. */
+/* The live demo renders the panel and the tape: both become cells of the live row's grid. */
 .hero-panel {
   display: contents;
-}
-
-/* Heat haze behind the instrument. */
-.hero::after {
-  content: "";
-  position: absolute;
-  z-index: -1;
-  right: -8%;
-  top: 30%;
-  width: 64%;
-  height: 64%;
-  background: radial-gradient(closest-side, var(--haze), transparent);
-  pointer-events: none;
 }
 
 .tape {
@@ -2348,10 +2494,26 @@ footer.site {
 /* ---- small screens ------------------------------------------------------------------------ */
 
 @media (max-width: 960px) {
-  .hero {
+  /* Stacked: the pitch on top, then the swarm's own 340 px zone, the console at the bottom. */
+  .field-hero {
+    align-content: start;
+    min-height: 0;
+  }
+  .field-copy {
+    max-width: none;
+    padding: 28px 0 340px;
+  }
+  /* The scrim covers the text only, not the swarm's zone below it. */
+  .field-copy::before {
+    inset: -32px -40px 320px -40px;
+  }
+  .field-legend {
+    display: none;
+  }
+  .live-row {
     grid-template-columns: minmax(0, 1fr);
-    gap: 36px;
-    padding-top: 28px;
+    row-gap: 28px;
+    padding-top: 56px;
   }
   .schematic,
   .instrument {
@@ -2371,9 +2533,6 @@ footer.site {
   }
   .tpl-grid.three {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .hero-title {
-    margin-bottom: 28px;
   }
   .statement {
     grid-template-columns: minmax(0, 1fr);
@@ -2415,6 +2574,21 @@ footer.site {
     gap: 12px;
     margin: 0 -16px 18px;
     padding: 0 16px;
+  }
+  .field-hero {
+    --gutter: 16px;
+    margin-top: -18px;
+  }
+  .field-console {
+    gap: 10px;
+    padding-left: 12px;
+    bottom: 18px;
+  }
+  .console-item {
+    padding-left: 10px;
+  }
+  .console-item .console-key:first-child {
+    display: none;
   }
   .wordmark {
     display: none;
