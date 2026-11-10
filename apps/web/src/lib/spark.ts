@@ -114,30 +114,79 @@ export interface SparkLook {
   reach?: number;
 }
 
-/** Draws the spark centered on (x, y) with radius `r` (center to tip). */
+/** The light's direction on screen, for the falloff across each facet. */
+const LIGHT_2D: readonly [number, number] = (() => {
+  const l = Math.hypot(LIGHT[0], LIGHT[1]) || 1;
+  return [LIGHT[0] / l, LIGHT[1] / l];
+})();
+
+/**
+ * Draws the spark centered on (x, y) with radius `r` (center to tip). Each facet carries its own
+ * light with a falloff across it, the edges catch a bevel of light, and the facet that turns toward
+ * both the light and the eye shows a glint.
+ */
 export function drawSpark(g: CanvasRenderingContext2D, x: number, y: number, r: number, yaw: number, pitch: number, look: SparkLook): void {
   const heat = clamp(look.heat ?? 0, 0, 1);
   if (look.glow !== false) {
     const reach = Math.min(r * (2.7 + heat * 1.6), look.reach ?? Infinity);
     const glow = g.createRadialGradient(x, y, r * 0.25, x, y, reach);
     glow.addColorStop(0, `rgba(255, 118, 38, ${(look.dark ? 0.34 : 0.22) + heat * 0.3})`);
+    glow.addColorStop(0.45, `rgba(255, 110, 30, ${(look.dark ? 0.1 : 0.06) + heat * 0.1})`);
     glow.addColorStop(1, "rgba(255, 106, 19, 0)");
     g.fillStyle = glow;
     g.beginPath();
     g.arc(x, y, reach, 0, Math.PI * 2);
     g.fill();
   }
+  const [lx, ly] = LIGHT_2D;
+  const faces = sparkFaces(yaw, pitch, 7).map((face) => {
+    const pts = face.points.map(([px, py]): [number, number] => [x + px * r, y + py * r]);
+    const cx = (pts[0]![0] + pts[1]![0] + pts[2]![0]) / 3;
+    const cy = (pts[0]![1] + pts[1]![1] + pts[2]![1]) / 3;
+    return { face, pts, cx, cy };
+  });
+  const trace = (pts: Array<[number, number]>) => {
+    g.beginPath();
+    pts.forEach(([px, py], i) => (i === 0 ? g.moveTo(px, py) : g.lineTo(px, py)));
+    g.closePath();
+  };
   g.save();
   g.lineJoin = "round";
-  g.lineWidth = Math.max(0.75, r / 30);
-  for (const face of sparkFaces(yaw, pitch, 7)) {
-    g.beginPath();
-    face.points.forEach(([px, py], i) => (i === 0 ? g.moveTo(x + px * r, y + py * r) : g.lineTo(x + px * r, y + py * r)));
-    g.closePath();
-    g.fillStyle = emberShade(0.1 + face.light * 0.8 + face.shine * 0.3 + heat * 0.18);
+  for (const { face, pts, cx, cy } of faces) {
+    const base = 0.1 + face.light * 0.8 + face.shine * 0.3 + heat * 0.18;
+    const span = r * 0.55;
+    const paint = g.createLinearGradient(cx + lx * span, cy + ly * span, cx - lx * span, cy - ly * span);
+    paint.addColorStop(0, emberShade(base + 0.13));
+    paint.addColorStop(1, emberShade(base - 0.11));
+    trace(pts);
+    g.fillStyle = paint;
     g.fill();
-    g.strokeStyle = `rgba(255, 228, 196, ${(0.16 + face.light * 0.5).toFixed(3)})`;
+    // The same paint along the edges closes the hairline seams anti-aliasing leaves between facets.
+    g.strokeStyle = paint;
+    g.lineWidth = Math.max(0.8, r / 40);
     g.stroke();
+  }
+  // Bevels: every edge catches a little light, the edges of lit facets more.
+  g.lineWidth = Math.max(0.7, r / 34);
+  for (const { face, pts } of faces) {
+    trace(pts);
+    g.strokeStyle = `rgba(255, 232, 204, ${(0.1 + face.light * 0.45).toFixed(3)})`;
+    g.stroke();
+  }
+  // A glint on the facet turned toward both the light and the eye, kept inside that facet.
+  const lit = faces.reduce<(typeof faces)[number] | null>((best, f) => (f.face.shine > (best?.face.shine ?? 0.15) ? f : best), null);
+  if (lit) {
+    g.save();
+    trace(lit.pts);
+    g.clip();
+    const gx = lit.cx + lx * r * 0.22;
+    const gy = lit.cy + ly * r * 0.22;
+    const spot = g.createRadialGradient(gx, gy, 0, gx, gy, r * 0.5);
+    spot.addColorStop(0, `rgba(255, 246, 228, ${(0.1 + lit.face.shine * 0.55).toFixed(3)})`);
+    spot.addColorStop(1, "rgba(255, 246, 228, 0)");
+    g.fillStyle = spot;
+    g.fillRect(gx - r, gy - r, r * 2, r * 2);
+    g.restore();
   }
   g.restore();
 }

@@ -72,6 +72,9 @@
   --face-shade: #d6cbbd;
   --face-line: rgb(28 24 20 / 12%);
   --drop: rgb(70 45 20 / 24%);
+  --face-glint: rgb(255 255 255 / 70%);
+  --face-occlude: rgb(90 60 30 / 7%);
+  --face-edge: rgb(255 255 255 / 95%);
   color-scheme: light;
 }
 
@@ -114,6 +117,9 @@
     --face-shade: #110f0d;
     --face-line: rgb(255 238 220 / 10%);
     --drop: rgb(0 0 0 / 60%);
+    --face-glint: rgb(255 238 220 / 6%);
+    --face-occlude: rgb(0 0 0 / 28%);
+    --face-edge: rgb(255 238 220 / 16%);
     color-scheme: dark;
   }
 }
@@ -2018,7 +2024,13 @@ pre.outline .kw {
 .slab-top {
   inset: 0;
   transform: translateZ(var(--sh));
-  background: var(--face-top);
+  background:
+    linear-gradient(180deg, var(--face-glint), transparent 58%),
+    linear-gradient(0deg, var(--face-occlude), transparent 52%),
+    var(--face-top);
+  box-shadow:
+    inset 1px 1px 0 var(--face-edge),
+    inset -1px -1px 0 var(--face-line);
 }
 
 /* The +y side: lower right in these views, turned away from the light. */
@@ -2029,7 +2041,10 @@ pre.outline .kw {
   height: var(--sh);
   transform-origin: 50% 100%;
   transform: rotateX(-90deg);
-  background: var(--face-shade);
+  background:
+    linear-gradient(180deg, var(--face-glint), transparent 65%),
+    linear-gradient(0deg, var(--face-occlude), transparent 75%),
+    var(--face-shade);
 }
 
 /* The -x side: lower left, toward the light. */
@@ -2040,7 +2055,11 @@ pre.outline .kw {
   height: var(--sd);
   transform-origin: 0 50%;
   transform: rotateY(-90deg);
-  background: var(--face-lit);
+  /* Its top edge is on the right (local x runs up the side). */
+  background:
+    linear-gradient(270deg, var(--face-glint), transparent 65%),
+    linear-gradient(90deg, var(--face-occlude), transparent 75%),
+    var(--face-lit);
 }
 
 /* Schematic paper under a stage, fading at its edges, and the soft shadow of what stands on it. */
@@ -2156,6 +2175,8 @@ pre.outline .kw {
   gap: 18px;
   border-radius: 2px;
   background:
+    linear-gradient(180deg, var(--face-glint), transparent 58%),
+    linear-gradient(0deg, var(--face-occlude), transparent 52%),
     linear-gradient(var(--grid) 1px, transparent 1px) 0 0 / 16px 16px,
     linear-gradient(90deg, var(--grid) 1px, transparent 1px) 0 0 / 16px 16px,
     var(--face-top);
@@ -2219,25 +2240,42 @@ pre.outline .kw {
   animation: spark-drop 4.2s var(--ease-travel) infinite;
 }
 
-.flow3d[data-live] .plate .slab-top {
-  animation: plate-catch 4.2s linear infinite;
+/* A plate's glow is a layer of its own that fades in and out: the compositor runs it, the plate
+   never repaints. */
+.plate .slab-top::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow:
+    inset 1.5px 1.5px 0 var(--accent),
+    inset -1.5px -1.5px 0 var(--accent),
+    0 0 38px -8px rgb(255 106 19 / 70%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.flow3d[data-live] .plate .slab-top::after {
+  animation: plate-catch 4.2s ease-in-out infinite;
 }
 
 .flow3d[data-live] .plate-label {
-  animation: label-catch 4.2s linear infinite;
+  animation: label-catch 4.2s ease-in-out infinite;
 }
 
 .flow3d[data-live] .flow-row .col-kind {
-  animation: row-catch 4.2s linear infinite;
+  animation: row-catch 4.2s ease-in-out infinite;
 }
 
 /* The spark reaches IF at 30% of the loop and THEN at 54%: everything there lights on arrival. */
-.flow3d[data-live] .plate-if :is(.slab-top, .plate-label),
+.flow3d[data-live] .plate-if .slab-top::after,
+.flow3d[data-live] .plate-if .plate-label,
 .flow3d[data-live] .flow-row:nth-child(2) .col-kind {
   animation-delay: 1.26s;
 }
 
-.flow3d[data-live] .plate-then :is(.slab-top, .plate-label),
+.flow3d[data-live] .plate-then .slab-top::after,
+.flow3d[data-live] .plate-then .plate-label,
 .flow3d[data-live] .flow-row:nth-child(3) .col-kind {
   animation-delay: 2.27s;
 }
@@ -2273,13 +2311,11 @@ pre.outline .kw {
   0%,
   30%,
   100% {
-    box-shadow: inset 0 0 0 1px var(--face-line);
+    opacity: 0;
   }
   4%,
   16% {
-    box-shadow:
-      inset 0 0 0 1.5px var(--accent),
-      0 0 38px -8px rgb(255 106 19 / 70%);
+    opacity: 1;
   }
 }
 
@@ -2399,7 +2435,7 @@ pre.outline .kw {
   flex: 1;
   display: flex;
   transform-origin: 50% 100%;
-  transform: translateY(calc((1 - var(--k)) * 28px)) rotateX(calc((1 - var(--k)) * 74deg));
+  transform: translateY(calc((1 - var(--k)) * 30px)) rotateX(calc((1 - var(--k)) * 60deg));
 }
 
 /* At rest a card has no transform (crisp text); the lean exists only while hovered. */
@@ -2574,7 +2610,8 @@ a.chip {
 
 .tblock .slab-top {
   box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--accent) calc(var(--g) * 100%), var(--face-line)),
+    inset 1px 1px 0 color-mix(in srgb, var(--accent) calc(var(--g) * 100%), var(--face-edge)),
+    inset -1px -1px 0 color-mix(in srgb, var(--accent) calc(var(--g) * 100%), var(--face-line)),
     0 0 calc(var(--g) * 34px) calc(var(--g) * -6px) rgb(255 106 19 / 45%);
 }
 
@@ -3176,7 +3213,7 @@ footer.site {
   /* Scroll-linked and looping pieces: shown in their final state, still. */
   .tape-track,
   .stack-spark,
-  .plate .slab-top,
+  .plate .slab-top::after,
   .plate-label,
   .flow-row .col-kind {
     animation: none !important;

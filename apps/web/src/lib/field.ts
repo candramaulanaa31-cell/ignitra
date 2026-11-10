@@ -1,7 +1,10 @@
 /**
- * The ignition field: the landing hero, drawn on three canvases: a back layer (haze, horizon, orbit
- * guides; redrawn only when the camera moves), a trail layer whose pixels fade each frame (comet
- * trails), and a crisp overlay cleared every frame (the core, the ports and their labels).
+ * The ignition field: the landing hero, on two canvases. The back one is static (haze and horizon,
+ * drawn on resize and theme changes only, so scrolling never repaints it). The front one is cleared
+ * and redrawn every frame in depth order: orbit guides (they follow the camera), block ticks, the
+ * swarm behind the core, the core, the swarm in front of it, then the ports and their labels.
+ * Trails are drawn from each particle's recent path, not by fading old frames, so they stay
+ * continuous at any speed and refresh rate and leave nothing behind.
  *
  * It shows IGNITRA's job. Chain activity rises from the horizon (the chain) at the rate the listener
  * sees blocks, and circles the core (the matcher): the spark of the mark as a solid, turning, with
@@ -9,8 +12,11 @@
  * ignites and shoots to its action's port, which shows that run. Block ticks and ignitions are real;
  * the ambient particles are an illustration of chain activity, and the page says so.
  *
- * Scrolling away raises the camera: the orbits open up from a low angle to a view from above.
+ * Scrolling away raises the camera: the orbits open up from a low angle to a view from above. The
+ * canvases render above the screen's pixel ratio (at least 2x) for clean edges, and step down if the
+ * device cannot hold a steady frame rate.
  */
+import { springTo, type Spring } from "./scenes";
 import { drawSpark } from "./spark";
 
 export interface FieldTheme {
@@ -24,6 +30,28 @@ export interface FieldTheme {
 }
 
 type Kind = "rise" | "orbit" | "ignite" | "fade";
+
+/** How much of its path a particle trails, in seconds. */
+const TRAIL_SECONDS: Record<Kind, number> = { orbit: 0.2, fade: 0.2, rise: 0.28, ignite: 0.36 };
+/** Positions kept per particle: the longest trail at up to 170 frames per second. */
+const TRAIL_CAP = 64;
+
+/** A particle's recent positions, in a ring: what its trail is drawn from. */
+class Trail {
+  readonly x = new Float32Array(TRAIL_CAP);
+  readonly y = new Float32Array(TRAIL_CAP);
+  readonly t = new Float64Array(TRAIL_CAP);
+  head = 0;
+  count = 0;
+
+  push(x: number, y: number, t: number): void {
+    this.x[this.head] = x;
+    this.y[this.head] = y;
+    this.t[this.head] = t;
+    this.head = (this.head + 1) % TRAIL_CAP;
+    this.count = Math.min(TRAIL_CAP, this.count + 1);
+  }
+}
 
 interface Particle {
   kind: Kind;
@@ -44,6 +72,7 @@ interface Particle {
   size: number;
   port?: number;
   label?: string;
+  trail: Trail;
 }
 
 interface Port {
@@ -59,6 +88,8 @@ interface Tick {
   x: number;
 }
 
+type Quality = "high" | "native" | "low";
+
 const TAU = Math.PI * 2;
 const FLAT = 0.36; // orbits are ellipses: a disc seen at a low angle...
 const FLAT_TOP = 0.74; // ...and from above, once the hero has scrolled away
@@ -72,21 +103,43 @@ export function riseRate(blocksPerSecond: number): number {
   return clamp(blocksPerSecond * 0.45, 0.6, 5);
 }
 
+/** A soft round glow, drawn once and stamped per particle (far cheaper than a gradient each time). */
+function glowSprite(rgb: string): HTMLCanvasElement {
+  const size = 64;
+  const c = document.createElement("canvas");
+  c.width = size;
+  c.height = size;
+  const g = c.getContext("2d");
+  if (g) {
+    const glow = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+    glow.addColorStop(0, `rgba(${rgb}, 0.9)`);
+    glow.addColorStop(0.22, `rgba(${rgb}, 0.32)`);
+    glow.addColorStop(0.55, `rgba(${rgb}, 0.08)`);
+    glow.addColorStop(1, `rgba(${rgb}, 0)`);
+    g.fillStyle = glow;
+    g.fillRect(0, 0, size, size);
+  }
+  return c;
+}
+
 export class IgnitionField {
   readonly #back: CanvasRenderingContext2D;
   readonly #front: CanvasRenderingContext2D;
-  readonly #over: CanvasRenderingContext2D;
   readonly #canvases: HTMLCanvasElement[];
   #theme: FieldTheme;
+  #glow: HTMLCanvasElement | null = null; // the swarm's glow (graphite theme only)
+  #ember: HTMLCanvasElement | null = null; // an ignition's glow
   #w = 0;
   #h = 0;
   #dpr = 1;
+  #quality: Quality = "high";
+  #slow = 0;
   #core = { x: 0, y: 0, r0: 0, r1: 0, s: 0, pulse: 0 };
+  #clock = 0;
   #spin = 0;
-  #scroll = 0;
+  #camera: Spring = { x: 0, v: 0 };
   #scrollGoal = 0;
   #flat = FLAT;
-  #backFlat = -1;
   #horizonY = 0;
   #riseFrom = { x0: 0, x1: 0 };
   #particles: Particle[] = [];
@@ -102,12 +155,12 @@ export class IgnitionField {
   #running = false;
   #max = 120;
 
-  constructor(back: HTMLCanvasElement, front: HTMLCanvasElement, overlay: HTMLCanvasElement, theme: FieldTheme, actions: readonly string[]) {
-    this.#canvases = [back, front, overlay];
+  constructor(back: HTMLCanvasElement, front: HTMLCanvasElement, theme: FieldTheme, actions: readonly string[]) {
+    this.#canvases = [back, front];
     this.#back = back.getContext("2d") as CanvasRenderingContext2D;
     this.#front = front.getContext("2d") as CanvasRenderingContext2D;
-    this.#over = overlay.getContext("2d") as CanvasRenderingContext2D;
     this.#theme = theme;
+    this.#makeSprites();
     this.#ports = (actions.length ? actions : ["Your stack"]).slice(0, 3).map((name) => ({ name, x: 0, y: 0, flash: 0, label: null, labelT: 0 }));
   }
 
@@ -117,20 +170,24 @@ export class IgnitionField {
 
   setTheme(theme: FieldTheme): void {
     this.#theme = theme;
+    this.#makeSprites();
     this.#drawBack();
     if (!this.#running) this.#drawStill();
   }
 
   /** Lays the field out for the canvas size; seeds an orbit so the first frame is already alive. */
   resize(width: number, height: number): void {
-    this.#dpr = Math.min(2, window.devicePixelRatio || 1);
+    this.#dpr = this.#pixelRatio();
     this.#w = width;
     this.#h = height;
     for (const c of this.#canvases) {
       c.width = Math.round(width * this.#dpr);
       c.height = Math.round(height * this.#dpr);
     }
-    for (const g of [this.#back, this.#front, this.#over]) g.setTransform(this.#dpr, 0, 0, this.#dpr, 0, 0);
+    for (const g of [this.#back, this.#front]) {
+      g.setTransform(this.#dpr, 0, 0, this.#dpr, 0, 0);
+      g.imageSmoothingQuality = "high";
+    }
     const wide = width >= 960; // the same breakpoint as the CSS that stacks the hero
     const base = Math.min(width, height);
     // Wide screens: the swarm sits right of the pitch. Narrow: in its own zone (the CSS reserves
@@ -224,10 +281,12 @@ export class IgnitionField {
     this.#last = performance.now();
     const frame = (now: number) => {
       if (!this.#running) return;
-      const dt = Math.min(0.05, (now - this.#last) / 1000);
+      const elapsed = (now - this.#last) / 1000;
       this.#last = now;
+      this.#govern(elapsed);
+      const dt = Math.min(0.05, elapsed);
       this.#step(dt);
-      this.#draw(dt);
+      this.#draw();
       this.#raf = requestAnimationFrame(frame);
     };
     this.#raf = requestAnimationFrame(frame);
@@ -241,6 +300,34 @@ export class IgnitionField {
   /** Reduced motion or paused: one composed still frame (the swarm without trails). */
   drawStill(): void {
     this.#drawStill();
+  }
+
+  // ---- quality ---------------------------------------------------------------------------------
+
+  #pixelRatio(): number {
+    const screen = window.devicePixelRatio || 1;
+    if (this.#quality === "high") return Math.min(3, Math.max(2, screen)); // supersampled on 1x-1.5x screens
+    if (this.#quality === "native") return Math.min(2, screen);
+    return 1;
+  }
+
+  /**
+   * Steps the resolution down if frames keep running long: a slow device or a busy page keeps a
+   * steady frame rate rather than a sharper image. The first moments after start (hydration,
+   * fonts) do not count.
+   */
+  #govern(elapsed: number): void {
+    if (this.#quality === "low" || this.#clock < 2) return;
+    this.#slow = elapsed > 1 / 40 ? this.#slow + 1 : Math.max(0, this.#slow - 2);
+    if (this.#slow < 45) return;
+    this.#slow = 0;
+    this.#quality = this.#quality === "high" ? "native" : "low";
+    if (this.#pixelRatio() !== this.#dpr) this.resize(this.#w, this.#h);
+  }
+
+  #makeSprites(): void {
+    this.#glow = this.#theme.dark ? glowSprite(this.#theme.ink) : null;
+    this.#ember = glowSprite("255, 140, 50");
   }
 
   // ---- simulation ------------------------------------------------------------------------------
@@ -266,6 +353,7 @@ export class IgnitionField {
       dur: 0,
       life: Math.max(2, 9 + Math.random() * 10 - age),
       size: 0.8 + Math.random() * 1.2,
+      trail: new Trail(),
     };
   }
 
@@ -293,9 +381,10 @@ export class IgnitionField {
   }
 
   #step(dt: number): void {
-    // The camera follows the scroll, gliding rather than jumping with each wheel notch.
-    this.#scroll += (this.#scrollGoal - this.#scroll) * (1 - Math.exp(-6 * dt));
-    this.#flat = FLAT + (FLAT_TOP - FLAT) * ease(this.#scroll);
+    this.#clock += dt;
+    // The camera follows the scroll on a spring: it eases off and settles, whatever the wheel does.
+    springTo(this.#camera, this.#scrollGoal, dt, 5.5);
+    this.#flat = FLAT + (FLAT_TOP - FLAT) * ease(clamp(this.#camera.x, 0, 1));
     this.#spin += dt * (0.45 + this.#core.pulse * 2.6);
     // Activity rises from the chain at a rate tied to the real block rate.
     this.#riseCarry += riseRate(this.#blockRate) * dt;
@@ -314,7 +403,7 @@ export class IgnitionField {
     // Fast enough that ticks stay about 18 px apart even on a phone: one block, one mark.
     const tickSpeed = Math.max(90, this.#w / 7, this.#blockRate * 18);
     for (const t of this.#ticks) t.x += tickSpeed * dt;
-    this.#ticks = this.#ticks.filter((t) => t.x < this.#w + 20);
+    this.#ticks = this.#ticks.filter((t) => t.x < this.#w + 40);
 
     this.#core.pulse = Math.max(0, this.#core.pulse - dt * 1.6);
     for (const port of this.#ports) {
@@ -380,6 +469,7 @@ export class IgnitionField {
           p.y += (dy / d) * f;
         }
       }
+      p.trail.push(p.x, p.y, this.#clock);
       keep.push(p);
     }
     this.#particles = keep;
@@ -389,12 +479,12 @@ export class IgnitionField {
 
   #drawBack(): void {
     const g = this.#back;
-    const { dark, guide } = this.#theme;
-    this.#backFlat = this.#flat;
+    const { dark } = this.#theme;
     g.clearRect(0, 0, this.#w, this.#h);
     // Heat haze around the core.
     const haze = g.createRadialGradient(this.#core.x, this.#core.y, 0, this.#core.x, this.#core.y, this.#core.r1 * 1.25);
     haze.addColorStop(0, dark ? "rgba(255, 96, 20, 0.16)" : "rgba(255, 106, 19, 0.10)");
+    haze.addColorStop(0.5, dark ? "rgba(255, 96, 20, 0.05)" : "rgba(255, 106, 19, 0.03)");
     haze.addColorStop(1, "rgba(255, 96, 20, 0)");
     g.fillStyle = haze;
     g.fillRect(0, 0, this.#w, this.#h);
@@ -412,38 +502,79 @@ export class IgnitionField {
     line.addColorStop(1, "rgba(255, 181, 71, 0)");
     g.fillStyle = line;
     g.fillRect(0, this.#horizonY, this.#w, 1.5);
-    // Orbit guides.
+  }
+
+  /** The orbit guides: on the front layer, because they follow the camera. */
+  #drawGuides(g: CanvasRenderingContext2D): void {
+    const { dark, guide } = this.#theme;
     g.save();
     g.translate(this.#core.x, this.#core.y);
     g.rotate(TILT);
     g.setLineDash([2, 6]);
+    g.strokeStyle = `rgba(${guide}, ${dark ? 0.16 : 0.22})`;
+    g.lineWidth = 1;
     for (const k of [0.45, 0.72, 1]) {
       g.beginPath();
       g.ellipse(0, 0, this.#core.r1 * k, this.#core.r1 * k * this.#flat, 0, 0, TAU);
-      g.strokeStyle = `rgba(${guide}, ${dark ? 0.16 : 0.22})`;
-      g.lineWidth = 1;
       g.stroke();
     }
     g.restore();
   }
 
+  #draw(): void {
+    this.#drawFront(true);
+  }
+
+  #drawStill(): void {
+    for (const p of this.#particles) {
+      if (p.kind === "orbit" || p.kind === "fade") {
+        const pt = this.#orbitPoint(p.a, p.r);
+        p.x = pt.x;
+        p.y = pt.y;
+      }
+    }
+    this.#drawFront(false);
+  }
+
+  /** The front layer, back to front, so the core hides what passes behind it. */
+  #drawFront(trails: boolean): void {
+    const g = this.#front;
+    const blend = this.#theme.dark ? "lighter" : "source-over";
+    g.clearRect(0, 0, this.#w, this.#h);
+    this.#drawGuides(g);
+    this.#drawTicks(g);
+    g.globalCompositeOperation = blend;
+    for (const p of this.#particles) if (this.#behind(p)) this.#drawParticle(g, p, trails);
+    g.globalCompositeOperation = "source-over";
+    this.#drawCore(g);
+    g.globalCompositeOperation = blend;
+    for (const p of this.#particles) if (!this.#behind(p)) this.#drawParticle(g, p, trails);
+    g.globalCompositeOperation = "source-over";
+    this.#drawPorts(g);
+  }
+
+  #behind(p: Particle): boolean {
+    return (p.kind === "orbit" || p.kind === "fade") && Math.sin(p.a) < 0;
+  }
+
+  /** Block ticks along the horizon, each with a short wake: pale heat on graphite, deeper ember on bone. */
+  #drawTicks(g: CanvasRenderingContext2D): void {
+    const rgb = this.#theme.dark ? "255, 210, 150" : "225, 83, 26";
+    for (const t of this.#ticks) {
+      const wake = g.createLinearGradient(t.x - 14, 0, t.x + 7, 0);
+      wake.addColorStop(0, `rgba(${rgb}, 0)`);
+      wake.addColorStop(0.62, `rgba(${rgb}, 0.5)`);
+      wake.addColorStop(0.68, `rgba(${rgb}, 0.95)`);
+      wake.addColorStop(1, `rgba(${rgb}, 0.95)`);
+      g.fillStyle = wake;
+      g.fillRect(t.x - 14, this.#horizonY - 1, 21, 2.5);
+    }
+  }
+
   /** The core: the spark as a solid, seen from the camera's height, flaring when a run goes through. */
   #drawCore(g: CanvasRenderingContext2D): void {
     const { x, y, s, pulse } = this.#core;
-    drawSpark(g, x, y, s * (1 + pulse * 0.12), this.#spin, 0.28 + ease(this.#scroll) * 0.5, { dark: this.#theme.dark, heat: pulse });
-  }
-
-  /** Particles crossing in front of the core are drawn again over it, so the swarm wraps the solid. */
-  #drawFrontOfCore(g: CanvasRenderingContext2D): void {
-    const { x, y, s } = this.#core;
-    const reach = s * 1.9;
-    g.globalCompositeOperation = this.#theme.dark ? "lighter" : "source-over";
-    for (const p of this.#particles) {
-      if (Math.abs(p.x - x) > reach || Math.abs(p.y - y) > reach) continue;
-      const inFront = p.kind === "ignite" || p.kind === "rise" || Math.sin(p.a) > 0;
-      if (inFront) this.#drawParticle(g, p);
-    }
-    g.globalCompositeOperation = "source-over";
+    drawSpark(g, x, y, s * (1 + pulse * 0.12), this.#spin, 0.28 + ease(clamp(this.#camera.x, 0, 1)) * 0.5, { dark: this.#theme.dark, heat: pulse });
   }
 
   #drawPorts(g: CanvasRenderingContext2D): void {
@@ -477,17 +608,11 @@ export class IgnitionField {
     }
   }
 
-  #drawParticle(g: CanvasRenderingContext2D, p: Particle): void {
+  #drawParticle(g: CanvasRenderingContext2D, p: Particle, trails: boolean): void {
     const { dark, ink } = this.#theme;
     if (p.kind === "ignite") {
-      const k = p.t / p.dur;
-      const halo = g.createRadialGradient(p.x, p.y, 0, p.x, p.y, 14);
-      halo.addColorStop(0, `rgba(255, ${170 + Math.round(60 * (1 - k))}, 90, 0.85)`);
-      halo.addColorStop(1, "rgba(255, 106, 19, 0)");
-      g.fillStyle = halo;
-      g.beginPath();
-      g.arc(p.x, p.y, 14, 0, TAU);
-      g.fill();
+      if (trails) this.#drawTrail(g, p, "255, 156, 64", 0.95, 2.6);
+      if (this.#ember) g.drawImage(this.#ember, p.x - 18, p.y - 18, 36, 36);
       g.fillStyle = "#fff1d2";
       g.beginPath();
       g.arc(p.x, p.y, 2.4, 0, TAU);
@@ -499,50 +624,49 @@ export class IgnitionField {
     if (p.kind === "fade") alpha *= 1 - p.t / p.dur;
     if (p.kind === "rise") alpha *= Math.min(1, p.t / 0.4);
     const size = p.size * (0.7 + depth * 0.8);
+    if (trails) this.#drawTrail(g, p, ink, alpha * (dark ? 0.8 : 0.65), size * 1.5);
+    // The near half of the swarm glows a little on graphite.
+    if (this.#glow && depth > 0.45) {
+      const s = size * 7;
+      g.globalAlpha = alpha * 0.5;
+      g.drawImage(this.#glow, p.x - s / 2, p.y - s / 2, s, s);
+      g.globalAlpha = 1;
+    }
     g.fillStyle = `rgba(${ink}, ${alpha.toFixed(3)})`;
     g.beginPath();
     g.arc(p.x, p.y, size, 0, TAU);
     g.fill();
   }
 
-  #draw(dt: number): void {
-    const g = this.#front;
-    const { dark } = this.#theme;
-    if (Math.abs(this.#flat - this.#backFlat) > 0.002) this.#drawBack(); // the guides follow the camera
-    // Fade the previous frame: what moved leaves a trail.
-    g.globalCompositeOperation = "destination-out";
-    g.fillStyle = `rgba(0, 0, 0, ${clamp(dt * (dark ? 11 : 14), 0.12, 0.5).toFixed(3)})`;
-    g.fillRect(0, 0, this.#w, this.#h);
-    g.globalCompositeOperation = dark ? "lighter" : "source-over";
-    for (const p of this.#particles) this.#drawParticle(g, p);
-    // Block ticks along the horizon: pale heat on graphite, deeper ember on bone.
-    g.fillStyle = dark ? "rgba(255, 210, 150, 0.95)" : "rgba(225, 83, 26, 0.9)";
-    for (const t of this.#ticks) g.fillRect(t.x, this.#horizonY - 1, 7, 2.5);
-    g.globalCompositeOperation = "source-over";
-    this.#drawOverlay();
-  }
-
-  /** The crisp layer: cleared and redrawn whole, so the core and labels never smear. */
-  #drawOverlay(): void {
-    const o = this.#over;
-    o.clearRect(0, 0, this.#w, this.#h);
-    this.#drawCore(o);
-    this.#drawFrontOfCore(o);
-    this.#drawPorts(o);
-  }
-
-  #drawStill(): void {
-    const g = this.#front;
-    g.globalCompositeOperation = "source-over";
-    g.clearRect(0, 0, this.#w, this.#h);
-    for (const p of this.#particles) {
-      if (p.kind === "orbit" || p.kind === "fade") {
-        const pt = this.#orbitPoint(p.a, p.r);
-        p.x = pt.x;
-        p.y = pt.y;
-      }
-      this.#drawParticle(g, p);
+  /** A trail along the particle's recent path, fading from its head to nothing. */
+  #drawTrail(g: CanvasRenderingContext2D, p: Particle, rgb: string, alpha: number, width: number): void {
+    const tr = p.trail;
+    if (tr.count < 2) return;
+    const span = TRAIL_SECONDS[p.kind];
+    let i = (tr.head - 1 + TRAIL_CAP) % TRAIL_CAP;
+    const hx = tr.x[i] as number;
+    const hy = tr.y[i] as number;
+    let ex = hx;
+    let ey = hy;
+    let n = 1;
+    g.beginPath();
+    g.moveTo(hx, hy);
+    while (n < tr.count) {
+      i = (i - 1 + TRAIL_CAP) % TRAIL_CAP;
+      if (this.#clock - (tr.t[i] as number) > span) break;
+      ex = tr.x[i] as number;
+      ey = tr.y[i] as number;
+      g.lineTo(ex, ey);
+      n++;
     }
-    this.#drawOverlay();
+    if (n < 2 || Math.abs(ex - hx) + Math.abs(ey - hy) < 0.5) return;
+    const fade = g.createLinearGradient(hx, hy, ex, ey);
+    fade.addColorStop(0, `rgba(${rgb}, ${alpha.toFixed(3)})`);
+    fade.addColorStop(1, `rgba(${rgb}, 0)`);
+    g.strokeStyle = fade;
+    g.lineWidth = width;
+    g.lineCap = "round";
+    g.lineJoin = "round";
+    g.stroke();
   }
 }

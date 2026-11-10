@@ -45,7 +45,6 @@ export function IgnitionFieldHero({ actions, initialRuns, children }: { actions:
   const host = useRef<HTMLElement>(null);
   const back = useRef<HTMLCanvasElement>(null);
   const front = useRef<HTMLCanvasElement>(null);
-  const over = useRef<HTMLCanvasElement>(null);
   const engine = useRef<IgnitionField | null>(null);
   const sync = useRef<() => void>(() => {});
   const userPaused = useRef(false);
@@ -56,10 +55,10 @@ export function IgnitionFieldHero({ actions, initialRuns, children }: { actions:
 
   useEffect(() => {
     const el = host.current;
-    if (!el || !back.current || !front.current || !over.current) return;
+    if (!el || !back.current || !front.current) return;
     const reduced = matchMedia("(prefers-reduced-motion: reduce)");
     const dark = matchMedia("(prefers-color-scheme: dark)");
-    const field = new IgnitionField(back.current, front.current, over.current, readTheme(el), actionKey.split("|").filter(Boolean));
+    const field = new IgnitionField(back.current, front.current, readTheme(el), actionKey.split("|").filter(Boolean));
     engine.current = field;
     const fit = () => {
       const r = el.getBoundingClientRect();
@@ -170,7 +169,6 @@ export function IgnitionFieldHero({ actions, initialRuns, children }: { actions:
     <section className="field-hero" ref={host} aria-label="IGNITRA">
       <canvas ref={back} className="field-layer" aria-hidden="true" />
       <canvas ref={front} className="field-layer" aria-hidden="true" />
-      <canvas ref={over} className="field-layer" aria-hidden="true" />
       <div className="field-copy">{children}</div>
       <div className="field-console" role="group" aria-label="Live chain">
         <span className="console-live">

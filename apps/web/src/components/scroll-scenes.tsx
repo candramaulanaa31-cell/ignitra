@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { approach, enterProgress, passProgress, stepProgress } from "@/lib/scenes";
+import { enterProgress, passProgress, smootherstep, springTo, stepProgress, type Spring } from "@/lib/scenes";
 
 type Key = "enter" | "p" | "step";
 const KEYS: readonly Key[] = ["enter", "p", "step"];
@@ -11,25 +11,34 @@ interface Scene {
   /** Where --enter reaches 1: the scene's top at this fraction of the viewport (data-scene="0.7"). */
   end: number;
   steps: HTMLElement[];
-  near: boolean;
+  /** Layout in page coordinates, read when layout can have changed, never per frame. */
+  top: number;
+  height: number;
+  stepTops: number[];
   shown: boolean;
-  cur: Record<Key, number>;
   goal: Record<Key, number>;
+  spring: Record<Key, Spring>;
+  written: Record<Key, number>;
 }
 
 /** Enter progress at which a scene's text animates in (on its own clock, once). */
 const SHOW_AT = 0.16;
+/** Spring pace: about 0.7 s to settle, soft at both ends. */
+const OMEGA = 8.5;
 
 /**
  * Drives the landing's scroll scenes. Every [data-scene] element gets --enter (0 → 1 as it comes
- * in; complete once its top reaches the fraction of the viewport given as the attribute's value,
- * 0.45 by default), --p (0 → 1 across its pass through the viewport) and, with [data-step]
- * children, --step (how many have been reached). Values glide toward the scroll position instead of jumping with each
- * wheel notch. data-in is set once a scene is in (text then animates on its own clock), data-live
- * while it is near the viewport (loops run only then). [data-tilt] elements lean toward a mouse.
+ * in, eased at both ends; complete once its top reaches the fraction of the viewport given as the
+ * attribute's value, 0.45 by default), --p (0 → 1 across its pass through the viewport) and, with
+ * [data-step] children, --step (how many have been reached). Each value rides a critically damped
+ * spring toward the scroll position: a wheel notch starts the motion softly and lets it settle,
+ * with no jump and no overshoot. data-in is set once a scene is in (text then animates on its own
+ * clock), data-live while it is near the viewport (loops run only then). [data-tilt] elements lean
+ * toward a mouse.
  *
- * Scene elements are never transformed themselves, so measuring them never feeds back. With reduced
- * motion nothing is driven: the CSS shows every scene assembled and still.
+ * Scene elements are never transformed themselves, and their positions are cached in page
+ * coordinates, so scrolling reads no layout at all. With reduced motion nothing is driven: the CSS
+ * shows every scene assembled and still.
  */
 export function ScrollScenes() {
   useEffect(() => {
@@ -39,32 +48,54 @@ export function ScrollScenes() {
       el,
       end: Number(el.dataset.scene) || 0.45,
       steps: [...el.querySelectorAll<HTMLElement>("[data-step]")],
-      near: false,
+      top: 0,
+      height: 0,
+      stepTops: [],
       shown: false,
-      cur: { enter: 0, p: 0, step: 0 },
       goal: { enter: 0, p: 0, step: 0 },
+      spring: { enter: { x: 0, v: 0 }, p: { x: 0, v: 0 }, step: { x: 0, v: 0 } },
+      written: { enter: Number.NaN, p: Number.NaN, step: Number.NaN },
     }));
     const byEl = new Map(scenes.map((s) => [s.el as Element, s]));
 
-    const measure = (s: Scene, vh: number) => {
-      const r = s.el.getBoundingClientRect();
-      s.goal.enter = enterProgress(r, vh, s.end);
-      s.goal.p = passProgress(r, vh);
-      s.goal.step = s.steps.length ? stepProgress(s.steps.map((x) => x.getBoundingClientRect().top), vh) : 0;
-      if (!s.shown && s.goal.enter > SHOW_AT) {
+    const layout = () => {
+      const y = window.scrollY;
+      for (const s of scenes) {
+        const r = s.el.getBoundingClientRect();
+        s.top = r.top + y;
+        s.height = r.height;
+        s.stepTops = s.steps.map((x) => x.getBoundingClientRect().top + y);
+      }
+    };
+    const aim = (s: Scene, y: number, vh: number) => {
+      const box = { top: s.top - y, height: s.height };
+      const enter = enterProgress(box, vh, s.end);
+      s.goal.enter = smootherstep(enter);
+      s.goal.p = passProgress(box, vh);
+      s.goal.step = s.stepTops.length ? stepProgress(s.stepTops.map((t) => t - y), vh) : 0;
+      if (!s.shown && enter > SHOW_AT) {
         s.shown = true;
         s.el.setAttribute("data-in", "");
       }
     };
-    const write = (s: Scene, key: Key) => s.el.style.setProperty(`--${key}`, s.cur[key].toFixed(4));
+    const write = (s: Scene, key: Key) => {
+      const v = s.spring[key].x;
+      if (Math.abs(v - s.written[key]) < 1e-4) return;
+      s.written[key] = v;
+      s.el.style.setProperty(`--${key}`, v.toFixed(4));
+    };
 
     // Start where the page already is, before text is allowed to hide: what is on screen at load
     // never flashes, and only what scrolls in later animates.
-    const vh0 = innerHeight;
+    layout();
+    const y0 = window.scrollY;
+    const vh0 = window.innerHeight;
     for (const s of scenes) {
-      measure(s, vh0);
-      s.cur = { ...s.goal };
-      for (const k of KEYS) write(s, k);
+      aim(s, y0, vh0);
+      for (const k of KEYS) {
+        s.spring[k] = { x: s.goal[k], v: 0 };
+        write(s, k);
+      }
     }
     root.setAttribute("data-scenes", "");
 
@@ -73,15 +104,16 @@ export function ScrollScenes() {
     const frame = (now: number) => {
       const dt = last ? Math.min(0.05, (now - last) / 1000) : 1 / 60;
       last = now;
-      const vh = innerHeight;
+      const y = window.scrollY;
+      const vh = window.innerHeight;
       let moving = false;
       for (const s of scenes) {
-        if (s.near) measure(s, vh);
+        aim(s, y, vh);
         for (const k of KEYS) {
-          if (s.cur[k] === s.goal[k]) continue;
-          s.cur[k] = approach(s.cur[k], s.goal[k], dt);
+          const spring = s.spring[k];
+          if (spring.x === s.goal[k] && spring.v === 0) continue;
+          if (springTo(spring, s.goal[k], dt, OMEGA)) moving = true;
           write(s, k);
-          moving = true;
         }
       }
       if (moving) raf = requestAnimationFrame(frame);
@@ -93,22 +125,24 @@ export function ScrollScenes() {
     const kick = () => {
       if (!raf) raf = requestAnimationFrame(frame);
     };
+    const relayout = () => {
+      layout();
+      kick();
+    };
 
     const io = new IntersectionObserver(
       (entries) => {
-        for (const e of entries) {
-          const s = byEl.get(e.target);
-          if (!s) continue;
-          s.near = e.isIntersecting;
-          s.el.toggleAttribute("data-live", e.isIntersecting);
-        }
-        kick();
+        for (const e of entries) byEl.get(e.target)?.el.toggleAttribute("data-live", e.isIntersecting);
       },
       { rootMargin: "20% 0px 20% 0px" },
     );
     for (const s of scenes) io.observe(s.el);
-    addEventListener("scroll", kick, { passive: true });
-    addEventListener("resize", kick);
+    // Fonts, the live feed or a resize can move things: re-read layout only then.
+    const ro = new ResizeObserver(relayout);
+    ro.observe(document.body);
+    window.addEventListener("scroll", kick, { passive: true });
+    window.addEventListener("resize", relayout);
+    window.addEventListener("load", relayout);
 
     // Cards lean toward the mouse (not on touch: there is no hover to lean toward).
     const tilts = matchMedia("(hover: hover) and (pointer: fine)").matches ? [...document.querySelectorAll<HTMLElement>("[data-tilt]")] : [];
@@ -133,8 +167,10 @@ export function ScrollScenes() {
     return () => {
       cancelAnimationFrame(raf);
       io.disconnect();
-      removeEventListener("scroll", kick);
-      removeEventListener("resize", kick);
+      ro.disconnect();
+      window.removeEventListener("scroll", kick);
+      window.removeEventListener("resize", relayout);
+      window.removeEventListener("load", relayout);
       for (const el of tilts) {
         el.removeEventListener("pointermove", lean);
         el.removeEventListener("pointerleave", settle);
