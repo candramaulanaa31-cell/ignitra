@@ -38,6 +38,12 @@ const fieldsBody = z
 
 const testBody = z.object({ sample: z.record(z.string(), z.unknown()).optional() }).strict();
 
+/**
+ * Someone is watching the builder's preview or a TEST run: give a cold Trust Layer time to compute
+ * a score (it can take several seconds) instead of the matcher's shorter wait.
+ */
+const INTERACTIVE_TRUST_WAIT = { waitMs: 15_000 } as const;
+
 /** Event and view-function fragments of an ABI, for the builder's pickers. */
 function abiSummary(abi: Abi) {
   const events = new Set<string>();
@@ -168,7 +174,7 @@ export function registerBuilderRoutes(app: FastifyInstance, ctx: ApiContext): vo
     }
     // TRUST LAYER fields the conditions read, so the builder shows real scores (never invented ones).
     const draft = { trigger: { type: module.type, params }, ...(conditions?.data ? { conditions: conditions.data } : {}), actions: [], settings: { mode: "confirmed", max_runs_per_hour: 60, onchain: false } } as unknown as FlowDefinition;
-    const payload = await enrichWithTrust(draft, sample.payload as Payload, ctx.trust);
+    const payload = await enrichWithTrust(draft, sample.payload as Payload, ctx.trust, INTERACTIVE_TRUST_WAIT);
     const evaluated = payload !== sample.payload && conditions?.data ? (evaluateConditions(conditions.data, payload).results as unknown[]) : null;
     return {
       data: {
@@ -232,7 +238,7 @@ export function registerBuilderRoutes(app: FastifyInstance, ctx: ApiContext): vo
       sampleInfo = { kind: sample.kind, note: sample.note };
     }
     // Real TRUST LAYER scores for chain samples; a custom sample keeps the ones it brings.
-    if (!body.sample || !Object.keys(body.sample).some((k) => /_trust_/.test(k))) payload = await enrichWithTrust(current.definition, payload as Payload, ctx.trust);
+    if (!body.sample || !Object.keys(body.sample).some((k) => /_trust_/.test(k))) payload = await enrichWithTrust(current.definition, payload as Payload, ctx.trust, INTERACTIVE_TRUST_WAIT);
     try {
       const { run, conditionsPassed } = await queueTestRun(ctx.db, { flowId: req.params.id, ownerId: me.userId, payload });
       ctx.onRunQueued();

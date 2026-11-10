@@ -21,7 +21,10 @@ export type TrustStatus =
   | "pending"
   /** A system address Trust Layer does not score. */
   | "not_a_subject"
-  /** Not configured, unreachable, rate limited or timed out. */
+  /**
+   * Not configured, unreachable, rate limited, or slower than the wait. A slow answer still lands
+   * in the cache when it arrives, so the next event from that address is scored.
+   */
   | "unavailable"
   /** Not looked up: the flow's other conditions failed anyway. */
   | "skipped"
@@ -35,9 +38,14 @@ export interface TrustResult {
   readonly risk_level: string | null;
 }
 
+export interface TrustLookupOptions {
+  /** How long this caller waits for an answer, in ms (the client's default otherwise). */
+  readonly waitMs?: number;
+}
+
 export interface TrustLookup {
   /** Never throws: failures come back as `unavailable`. */
-  score(address: NormalizedAddress): Promise<TrustResult>;
+  score(address: NormalizedAddress, options?: TrustLookupOptions): Promise<TrustResult>;
 }
 
 /** Parties each trigger offers for scoring. `counterparty` is the side other than the watched one. */
@@ -95,7 +103,7 @@ function couldPass(node: ConditionNode, payload: Payload): boolean {
 const result = (status: TrustStatus): TrustResult => ({ status, score: null, band: null, risk_level: null });
 
 /** Adds `<role>_trust_*` fields the flow reads. Returns a new payload; never throws. */
-export async function enrichWithTrust(def: FlowDefinition, payload: Payload, lookup: TrustLookup | null): Promise<Payload> {
+export async function enrichWithTrust(def: FlowDefinition, payload: Payload, lookup: TrustLookup | null, options?: TrustLookupOptions): Promise<Payload> {
   const roles = trustRolesUsed(def);
   if (roles.length === 0) return payload;
   const skip = def.conditions !== undefined && !couldPass(def.conditions, payload);
@@ -107,7 +115,7 @@ export async function enrichWithTrust(def: FlowDefinition, payload: Payload, loo
       if (typeof raw !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(raw)) r = result("not_applicable");
       else if (skip) r = result("skipped");
       else if (!lookup) r = result("unavailable");
-      else r = await lookup.score(normalizeAddress(raw));
+      else r = await lookup.score(normalizeAddress(raw), options);
       out[`${role}_trust_score`] = r.score;
       out[`${role}_trust_band`] = r.band;
       out[`${role}_trust_status`] = r.status;
@@ -124,6 +132,16 @@ export interface TrustLayerOptions {
   /** `tl_live_…`, optional unless the Trust Layer instance requires keys. */
   readonly apiKey?: string | null;
   readonly fetch?: typeof globalThis.fetch;
+  /**
+   * How long a lookup waits for an answer by default (8 s). Past it the caller gets `unavailable`
+   * and moves on, so a slow Trust Layer never holds the matcher longer than this.
+   */
+  readonly waitMs?: number;
+  /**
+   * How long the request itself may run (20 s). It outlives the wait on purpose: Trust Layer
+   * computes a stale score on request (seconds when cold, milliseconds once warm), and an answer
+   * that arrives late is cached for the next event from that address.
+   */
   readonly timeoutMs?: number;
   readonly maxConcurrent?: number;
   readonly now?: () => number;
@@ -154,7 +172,8 @@ export function createTrustLayerClient(opts: TrustLayerOptions): TrustLookup {
   const base = opts.baseUrl.replace(/\/+$/, "");
   const fetchFn = opts.fetch ?? globalThis.fetch.bind(globalThis);
   const now = opts.now ?? Date.now;
-  const timeoutMs = opts.timeoutMs ?? 3000;
+  const waitMs = opts.waitMs ?? 8000;
+  const timeoutMs = opts.timeoutMs ?? 20_000;
   const maxConcurrent = opts.maxConcurrent ?? 4;
   const cache = new Map<string, { value: TrustResult; until: number }>();
   const inflight = new Map<string, Promise<TrustResult>>();
@@ -218,20 +237,32 @@ export function createTrustLayerClient(opts: TrustLayerOptions): TrustLookup {
     }
   }
 
+  /** The answer if it comes within `ms`; otherwise `unavailable` now, while the request goes on and fills the cache. */
+  const within = (p: Promise<TrustResult>, ms: number): Promise<TrustResult> =>
+    new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(result("unavailable")), Math.max(0, ms));
+      (timer as { unref?: () => void }).unref?.();
+      void p.then((value) => {
+        clearTimeout(timer);
+        resolve(value);
+      });
+    });
+
   return {
-    async score(address) {
+    async score(address, options) {
       const hit = cache.get(address);
       if (hit && hit.until > now()) return hit.value;
-      const pending = inflight.get(address);
-      if (pending) return pending;
-      const p = fetchScore(address).then((value) => {
-        inflight.delete(address);
-        if (cache.size >= MAX_CACHED) cache.delete(cache.keys().next().value as string);
-        cache.set(address, { value, until: now() + TTL_MS[value.status] });
-        return value;
-      });
-      inflight.set(address, p);
-      return p;
+      let p = inflight.get(address);
+      if (!p) {
+        p = fetchScore(address).then((value) => {
+          inflight.delete(address);
+          if (cache.size >= MAX_CACHED) cache.delete(cache.keys().next().value as string);
+          cache.set(address, { value, until: now() + TTL_MS[value.status] });
+          return value;
+        });
+        inflight.set(address, p);
+      }
+      return within(p, options?.waitMs ?? waitMs);
     },
   };
 }

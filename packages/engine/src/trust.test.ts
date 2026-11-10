@@ -114,6 +114,43 @@ describe("the Trust Layer client", () => {
     expect([retryAfterMs("5", 0), retryAfterMs(new Date(90_000).toUTCString(), 0), retryAfterMs(null, 0), retryAfterMs("soon", 0), retryAfterMs("86400", 0)]).toEqual([5000, 90_000, 30_000, 30_000, 600_000]);
   });
 
+  it("waits a bounded time, then lets the late answer land in the cache for the next event", async () => {
+    let answer!: () => void;
+    const gate = new Promise<void>((r) => (answer = r));
+    const seen: string[] = [];
+    const fetch = (async (url: string) => {
+      seen.push(url);
+      await gate; // a cold Trust Layer computing the score
+      return new Response(JSON.stringify({ status: "scored", trust_score: 677, band: "moderate", risk_level: "medium" }), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    const client = createTrustLayerClient({ baseUrl: "http://trust.test", fetch, waitMs: 15 });
+    const started = Date.now();
+    expect((await client.score(A)).status).toBe("unavailable"); // this event goes on
+    expect(Date.now() - started).toBeLessThan(1000);
+    answer();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(await client.score(A)).toEqual({ status: "scored", score: 677, band: "moderate", risk_level: "medium" });
+    expect(seen).toHaveLength(1); // the one request, answered late, then reused
+  });
+
+  it("lets a caller wait longer (a TEST run someone is watching), and slow answers are not failures", async () => {
+    const seen: string[] = [];
+    const fetch = (async (url: string) => {
+      seen.push(url);
+      await new Promise((r) => setTimeout(r, 40));
+      return new Response(JSON.stringify({ status: "scored", trust_score: 700, band: "strong", risk_level: "low" }), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    const client = createTrustLayerClient({ baseUrl: "http://trust.test", fetch, waitMs: 5 });
+    expect((await client.score(B, { waitMs: 2000 })).score).toBe(700);
+    // Six slow lookups in a row: each caller gave up, every request succeeded, the breaker stays shut.
+    for (const n of [1, 2, 3, 4, 5, 6]) expect((await client.score(normalizeAddress(`0x${n.toString(16).padStart(40, "0")}`))).status).toBe("unavailable");
+    await new Promise((r) => setTimeout(r, 250)); // all six requests have answered by now
+    const before = seen.length;
+    expect(before).toBe(7);
+    expect((await client.score(normalizeAddress(`0x${"7".padStart(40, "0")}`), { waitMs: 2000 })).status).toBe("scored");
+    expect(seen.length).toBe(before + 1);
+  });
+
   it("shares one request between concurrent lookups of an address", async () => {
     const { fetch, seen } = fake([{ status: 200, body: { status: "provisional", trust_score: 450, band: "moderate" } }]);
     const client = createTrustLayerClient({ baseUrl: "http://trust.test", fetch });

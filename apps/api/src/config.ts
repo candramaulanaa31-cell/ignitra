@@ -20,6 +20,12 @@ export const apiEnvShape = {
   /** TRUST LAYER (reputation for Robinhood Chain): counterparty_trust_score conditions. Optional. */
   TRUST_LAYER_API_URL: envVar.optional(envVar.httpUrl),
   TRUST_LAYER_API_KEY: envVar.optional(z.string().min(8)),
+  /**
+   * How long matching waits for a score before the event goes on as `unavailable` (ms). Trust
+   * Layer computes a stale score on request, which can take seconds; an answer that arrives later
+   * is cached for the next event from that address.
+   */
+  TRUST_LAYER_WAIT_MS: envVar.withDefault(envVar.int(250, 60_000).default(8000)),
   /** Default VIGIL API for VIGIL connections (the site followed by /api/v1). Optional. */
   VIGIL_API_URL: envVar.optional(envVar.httpUrl),
   API_HOST: envVar.withDefault(z.string().default("127.0.0.1")),
@@ -91,8 +97,10 @@ type ApiEnvSubset = Pick<
 
 /** Builds the API from env: secrets, CORS / SIWE domains, ABI lookups for save-time event/function resolution. */
 /** The TRUST LAYER client, when the operator configured one. */
-export function trustFromEnv(env: { TRUST_LAYER_API_URL?: string | undefined; TRUST_LAYER_API_KEY?: string | undefined }): TrustLookup | null {
-  return env.TRUST_LAYER_API_URL ? createTrustLayerClient({ baseUrl: env.TRUST_LAYER_API_URL, apiKey: env.TRUST_LAYER_API_KEY ?? null }) : null;
+export function trustFromEnv(env: { TRUST_LAYER_API_URL?: string | undefined; TRUST_LAYER_API_KEY?: string | undefined; TRUST_LAYER_WAIT_MS?: number | undefined }): TrustLookup | null {
+  return env.TRUST_LAYER_API_URL
+    ? createTrustLayerClient({ baseUrl: env.TRUST_LAYER_API_URL, apiKey: env.TRUST_LAYER_API_KEY ?? null, ...(env.TRUST_LAYER_WAIT_MS ? { waitMs: env.TRUST_LAYER_WAIT_MS } : {}) })
+    : null;
 }
 
 export async function createApiFromEnv(

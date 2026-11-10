@@ -535,7 +535,7 @@ Not exercised live: the Email and Sheets templates against real accounts (the ac
 | Service | In IGNITRA |
 |---|---|
 | VIGIL | The `VIGIL_ALERT` trigger. Add the connection in one of two ways. With a `vgl_` API key, IGNITRA registers its receiver in VIGIL itself and does not keep the key. Without one, the user registers the receiver URL in VIGIL, then pastes the secret VIGIL showed into `POST /v1/connections/:id/verify`; deliveries are refused until then. The receiver `POST /v1/integrations/vigil/:connection_id` checks `x-vigil-signature` (HMAC over `"<ts>.<raw body>"`, 5 min). The trigger's options are stage, minimum severity, rules, contracts and retractions. Each alert runs once per stage. VIGIL only delivers to public URLs, so the API must be reachable at a public `API_PUBLIC_URL`. |
-| TRUST LAYER | `counterparty_trust_score`, `from_trust_*` and `to_trust_*` (score, band, status) for conditions and templates. Lookups are lazy: only for flows that read them, after the other conditions pass, cached per address, with a circuit breaker. A 429 pauses every lookup for its `Retry-After`. A score is never invented: without one the score is null and `*_trust_status` says why (`pending`, `unavailable`, …). Set `TRUST_LAYER_API_URL` (and `_KEY`). |
+| TRUST LAYER | `counterparty_trust_score`, `from_trust_*` and `to_trust_*` (score, band, status) for conditions and templates. Lookups are lazy: only for flows that read them, after the other conditions pass, cached per address, with a circuit breaker. A 429 pauses every lookup for its `Retry-After`. A score is never invented: without one the score is null and `*_trust_status` says why (`pending`, `unavailable`, …). Matching waits up to `TRUST_LAYER_WAIT_MS` (8 s) for a score. Trust Layer computes a stale score on request, which can take seconds, so a later answer is still cached for the next event from that address. TEST runs and the builder's preview wait up to 15 s. Set `TRUST_LAYER_API_URL` (and `_KEY`). |
 | MANDATE | The policy every ONCHAIN_TX must pass, defined here: a signed POST of the exact call (`onchain.intent`), answered `{"decision":"allow"|"deny"}`. Only `allow` sends. `deny` is final; anything else is retried and nothing is sent. `ONCHAIN_MANDATE_REQUIRED` (default true) makes it mandatory for every grant. |
 | Pons | The `NEW_LAUNCH` trigger: `TokenLaunched` on the Pons V2 factory. It gives the token, the deployer (`counterparty`), the curve, the pair (ETH or a token), the graduation threshold and the socials (unverified). |
 
@@ -569,7 +569,7 @@ Live on mainnet, with a local backend, the web app, a stub receiver and a throwa
 |---|---|
 | SDK (the built package) with an API key | 10/10: account, catalog, connections (webhook, MANDATE, Telegram, VIGIL pending), validate with trust fields, 422 issues, create, TEST run, `iterateRuns`, pause. An API key can not create keys or grants (403 `session_required`). |
 | Webhooks | 31 deliveries (30 real USDG transfers + 1 TEST), 31 verified by the SDK's `parseWebhook`. The busy flow then auto-paused at `max_runs_per_hour`. |
-| TRUST LAYER | Real lookups against a running Trust Layer. It answered 202 (still indexing), giving `pending`, then 429, giving `unavailable`; a score was never invented. This led to honouring `Retry-After`. |
+| TRUST LAYER | Real lookups against a running Trust Layer. It answered 202 (still indexing), giving `pending`, then 429, giving `unavailable`; a score was never invented. This led to honouring `Retry-After`. On 2026-11-10 it had scores. TEST runs of 13 real USDG transfers from the earlier run (a draft flow with `from_trust_score ≥ 600`) read `scored` 4 times (673–750), `provisional` 3 times (665–705), `insufficient_data` 3 times and `pending` 3 times, each as Trust Layer answered. The condition passed for exactly the seven scored and provisional senders. A stale score took 3–10 s on its first request and about 20 ms after that. That outran the old 3 s timeout, so lookups now wait a bounded time and keep late answers. |
 | Pons | The latest real launch decoded through `/v1/samples`: LimeLift (LIME), block 108,642,056, ETH pair, 4.2 ETH graduation, socials. |
 | Grant on a real Safe | A pending grant for a mainnet Safe 1.4.1 that is not ours: 7 planned calls and a Transaction Builder file. Without MANDATE → 422; with an API key → 403; verifying an unrelated transaction → refused with the reasons. Nothing was sent. |
 | UI | Headless Edge: Settings, Connections, Onchain, the grant page, the builder with an Onchain transaction step, the new docs. No page errors, no horizontal overflow. |
@@ -579,7 +579,6 @@ Not validated live yet:
 
 - **A run started by a real VIGIL alert.** Three watches on busy wallets raised no alert in about 15 minutes. Such an alert takes the path VIGIL's test request took.
 - **ONCHAIN_TX on mainnet.** It needs a Safe we own; the fork test proves it.
-- **A `scored` TRUST LAYER answer.** The test instance could not index: its explorer calls answered HTTP 402.
 - **The npm release.** Log in to npm and create the `ignitra` organization, then `pnpm release:sdk`. It must be pnpm: it publishes the `dist` entry points from `publishConfig`, and `prepublishOnly` runs the typecheck and tests first.
 
 ## Hardening and operations
@@ -683,7 +682,7 @@ Web Push through a real push service (2026-11-08). Headless Edge with the produc
 
 This run found a real bug, now fixed. A request sent 24 ms after its flow was created never ran: the matcher's flow index was cached and the stream's offset moved past the request. Rows newer than the index are now matched with an index read after them, and a regression test covers confirmed, fast and inbound flows.
 
-Still open: the npm release; Web Push on a phone; real Resend and Google accounts; a run from an organic VIGIL alert; ONCHAIN_TX on mainnet (it needs a Safe we own; the fork test covers it); a `scored` TRUST LAYER answer.
+Still open: the npm release; Web Push on a phone; real Resend and Google accounts; a run from an organic VIGIL alert; ONCHAIN_TX on mainnet (it needs a Safe we own; the fork test covers it).
 
 ## Deploying
 
