@@ -65,6 +65,13 @@
   --edge-lo: #d6ccbe;
   --bevel: rgb(255 255 255 / 75%);
   --haze: rgb(255 106 19 / 9%);
+
+  /* 3D faces: one matte material, one light from the upper left. */
+  --face-top: #fffdf9;
+  --face-lit: #ece5da;
+  --face-shade: #d6cbbd;
+  --face-line: rgb(28 24 20 / 12%);
+  --drop: rgb(70 45 20 / 24%);
   color-scheme: light;
 }
 
@@ -102,6 +109,11 @@
     --edge-lo: rgb(255 238 220 / 5%);
     --bevel: rgb(255 238 220 / 4.5%);
     --haze: rgb(255 96 20 / 14%);
+    --face-top: #26221e;
+    --face-lit: #1b1815;
+    --face-shade: #110f0d;
+    --face-line: rgb(255 238 220 / 10%);
+    --drop: rgb(0 0 0 / 60%);
     color-scheme: dark;
   }
 }
@@ -1800,8 +1812,7 @@ pre.outline .kw {
 }
 
 .panel,
-.schematic,
-.instrument,
+.module,
 .tpl-card {
   border-color: transparent;
   background:
@@ -1940,134 +1951,358 @@ pre.outline .kw {
   max-width: 62ch;
 }
 
-.schematic {
-  position: relative;
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--surface);
+/*
+ * 3D scenes. The landing's objects are CSS solids lit the same way: matte graphite (bone in light
+ * mode), the light from the upper left, ember only where something real happens. The driver in
+ * components/scroll-scenes.tsx writes each scene's progress; with no script, and for reduced
+ * motion, every scene shows assembled.
+ */
+[data-scene] {
+  --enter: 1;
+  --p: 0.5;
+  --step: 9;
 }
 
-.schematic-col {
-  position: relative;
-  padding: 24px 24px 26px;
+/* Text in a scene arrives once, on its own clock: scrolling never leaves it half there. */
+[data-scenes] .rv:not([data-in]) > * {
+  opacity: 0;
+  transform: translateY(18px);
 }
 
-.schematic-col + .schematic-col {
-  border-left: 1px solid var(--border);
+.rv > * {
+  transition:
+    opacity 700ms var(--ease-out),
+    transform 900ms var(--ease-out);
 }
 
-/* The wire runs along the top edge; its nodes sit where the columns meet. */
-.schematic-wire {
+.rv > :nth-child(2) {
+  transition-delay: 80ms;
+}
+
+.rv > :nth-child(3) {
+  transition-delay: 160ms;
+}
+
+.rv > :nth-child(4) {
+  transition-delay: 240ms;
+}
+
+/* An isometric stage: its floor is the XY plane, height is Z. --p turns it a little as it passes. */
+.iso {
+  --iso-rz: calc(var(--iso-z, -42deg) + (var(--p) - 0.5) * var(--iso-turn, 0deg));
   position: absolute;
-  z-index: 1;
-  left: 12px;
-  right: 12px;
-  top: -1px;
-  height: 2px;
-  border-radius: 2px;
-  background: var(--heat);
-  transform-origin: left;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  transform-style: preserve-3d;
+  transform: rotateX(var(--iso-x, 56deg)) rotateZ(var(--iso-rz));
+}
+
+.slab {
+  position: absolute;
+  left: calc(var(--sw) / -2);
+  top: calc(var(--sd) / -2);
+  width: var(--sw);
+  height: var(--sd);
+  transform-style: preserve-3d;
+}
+
+.slab-face {
+  position: absolute;
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+  box-shadow: inset 0 0 0 1px var(--face-line);
+}
+
+.slab-top {
+  inset: 0;
+  transform: translateZ(var(--sh));
+  background: var(--face-top);
+}
+
+/* The +y side: lower right in these views, turned away from the light. */
+.slab-front {
+  left: 0;
+  top: calc(var(--sd) - var(--sh));
+  width: var(--sw);
+  height: var(--sh);
+  transform-origin: 50% 100%;
+  transform: rotateX(-90deg);
+  background: var(--face-shade);
+}
+
+/* The -x side: lower left, toward the light. */
+.slab-left {
+  left: 0;
+  top: 0;
+  width: var(--sh);
+  height: var(--sd);
+  transform-origin: 0 50%;
+  transform: rotateY(-90deg);
+  background: var(--face-lit);
+}
+
+/* Schematic paper under a stage, fading at its edges, and the soft shadow of what stands on it. */
+.stack-floor,
+.tower-floor {
+  position: absolute;
+  background-image:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 22px 22px;
+  -webkit-mask-image: radial-gradient(closest-side, #000 45%, transparent);
+  mask-image: radial-gradient(closest-side, #000 45%, transparent);
+}
+
+.stack-shadow,
+.tower-shadow {
+  position: absolute;
+  border-radius: 12px;
+  background: var(--drop);
+  filter: blur(22px);
+}
+
+/* The live panel lifts off the page: tilted back on its bottom edge, then upright to face you. */
+.lift {
+  position: relative;
+  perspective: 1700px;
+  perspective-origin: 50% 0%;
+}
+
+.lift-body {
+  --t: calc(1 - var(--enter));
+  position: relative;
+  transform-origin: 50% 100%;
+  transform: translateY(calc(var(--t) * 36px)) rotateX(calc(var(--t) * 28deg));
+}
+
+/* Its thickness: a base under the bottom edge, foreshortened with the panel while it tilts. */
+.lift-body > .panel {
+  box-shadow:
+    0 7px 0 -1px var(--face-shade),
+    var(--shadow);
+}
+
+.lift::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  left: 6%;
+  right: 6%;
+  bottom: -30px;
+  height: 46px;
+  background: radial-gradient(closest-side, var(--drop), transparent);
+  opacity: calc(0.4 + (1 - var(--enter)) * 0.6);
   pointer-events: none;
 }
 
-.schematic-col + .schematic-col::before {
-  content: "";
-  position: absolute;
-  z-index: 2;
-  left: -6px;
-  top: -6px;
-  width: 11px;
-  height: 11px;
+/*
+ * 01: the flow as an exploded stack. The plates part as the section comes in; a spark drops
+ * through WHEN, IF and THEN, and each row lights as it passes.
+ */
+.flow3d {
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
+  column-gap: 40px;
+  align-items: center;
+}
+
+.stack-figure {
+  position: relative;
+  height: 480px;
+  perspective: 2200px;
+  perspective-origin: 50% 25%;
+}
+
+/* Seen from a little higher, and parted far enough that every plate shows its center: the spark
+   stays in view all the way down. */
+.stack {
+  --iso-x: 60deg;
+  --iso-z: -40deg;
+  --iso-turn: 14deg;
+  --gap: calc(24px + var(--enter) * 104px);
+  top: 52%;
+}
+
+.stack-floor {
+  left: -180px;
+  top: -180px;
+  width: 360px;
+  height: 360px;
+  transform: translateZ(calc(var(--gap) * -1 - 46px));
+}
+
+.stack-shadow {
+  left: -105px;
+  top: -105px;
+  width: 210px;
+  height: 210px;
+  transform: translateZ(calc(var(--gap) * -1 - 45px));
+  opacity: 0.8;
+}
+
+.plate {
+  --sw: 200px;
+  --sd: 200px;
+  --sh: 14px;
+  transform: translateZ(calc(var(--z) * var(--gap) - 7px));
+}
+
+.plate .slab-top {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 18px;
+  border-radius: 2px;
+  background:
+    linear-gradient(var(--grid) 1px, transparent 1px) 0 0 / 16px 16px,
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px) 0 0 / 16px 16px,
+    var(--face-top);
+}
+
+.plate-glyph {
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--muted);
   border-radius: 50%;
-  background: var(--heat);
-  box-shadow: 0 0 0 4px var(--bg);
 }
 
-/* Where supported, the wire burns from WHEN to THEN as the section scrolls into view. */
-@supports (animation-timeline: view()) {
-  .schematic {
-    view-timeline: --schematic block;
-  }
-  .schematic-wire {
-    animation: wire-draw linear both;
-    animation-timeline: --schematic;
-    animation-range: cover 12% cover 48%;
-  }
-  .schematic-col:nth-child(3)::before {
-    animation: ignite-at-third linear both;
-    animation-timeline: --schematic;
-    animation-range: cover 12% cover 48%;
-  }
-  .schematic-col:nth-child(4)::before {
-    animation: ignite-at-two-thirds linear both;
-    animation-timeline: --schematic;
-    animation-range: cover 12% cover 48%;
-  }
-  /* Labels only change color: IF and THEN light up as the heat reaches their column. */
-  .schematic-col:nth-child(3) .col-kind {
-    animation: label-at-third linear both;
-    animation-timeline: --schematic;
-    animation-range: cover 12% cover 48%;
-  }
-  .schematic-col:nth-child(4) .col-kind {
-    animation: label-at-two-thirds linear both;
-    animation-timeline: --schematic;
-    animation-range: cover 12% cover 48%;
-  }
+.plate-if .plate-glyph {
+  border-radius: 3px;
+  transform: rotate(45deg) scale(0.85);
 }
 
-@keyframes label-at-third {
-  0%,
-  31% {
-    color: var(--faint);
+.plate-then .plate-glyph {
+  border: 0;
+  border-radius: 3px;
+  transform: rotate(45deg) scale(0.85);
+  background: var(--heat-fill);
+}
+
+.plate-label {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.26em;
+  color: var(--muted);
+}
+
+/* The wire the signal travels: straight down through the plates. */
+.stack-rod {
+  position: absolute;
+  left: -1px;
+  top: 0;
+  width: 2px;
+  height: calc(var(--gap) * 2 + 60px);
+  transform-origin: 50% 0;
+  transform: translateZ(calc(var(--gap) * -1 - 30px)) rotateX(90deg);
+  background: linear-gradient(transparent, var(--border-strong) 14%, var(--border-strong) 86%, transparent);
+}
+
+/* The spark always faces the camera: the stage's own turn, undone. */
+.stack-spark {
+  --face: rotateZ(calc(-1 * var(--iso-rz))) rotateX(calc(-1 * var(--iso-x)));
+  position: absolute;
+  left: -10px;
+  top: -10px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #fff3dc 0 20%, #ffb547 32%, rgb(255 106 19 / 55%) 50%, rgb(255 106 19 / 0%) 70%);
+  opacity: 0;
+  transform: translateZ(calc(var(--gap) + 12px)) var(--face);
+}
+
+/* The loop runs only while the section is near the screen (data-live). */
+.flow3d[data-live] .stack-spark {
+  animation: spark-drop 4.2s var(--ease-travel) infinite;
+}
+
+.flow3d[data-live] .plate .slab-top {
+  animation: plate-catch 4.2s linear infinite;
+}
+
+.flow3d[data-live] .plate-label {
+  animation: label-catch 4.2s linear infinite;
+}
+
+.flow3d[data-live] .flow-row .col-kind {
+  animation: row-catch 4.2s linear infinite;
+}
+
+/* The spark reaches IF at 30% of the loop and THEN at 54%: everything there lights on arrival. */
+.flow3d[data-live] .plate-if :is(.slab-top, .plate-label),
+.flow3d[data-live] .flow-row:nth-child(2) .col-kind {
+  animation-delay: 1.26s;
+}
+
+.flow3d[data-live] .plate-then :is(.slab-top, .plate-label),
+.flow3d[data-live] .flow-row:nth-child(3) .col-kind {
+  animation-delay: 2.27s;
+}
+
+@keyframes spark-drop {
+  0% {
+    opacity: 0;
+    transform: translateZ(calc(var(--gap) + 12px)) var(--face);
   }
-  35%,
+  5%,
+  12% {
+    opacity: 1;
+    transform: translateZ(calc(var(--gap) + 12px)) var(--face);
+  }
+  30%,
+  36% {
+    opacity: 1;
+    transform: translateZ(12px) var(--face);
+  }
+  54%,
+  66% {
+    opacity: 1;
+    transform: translateZ(calc(var(--gap) * -1 + 12px)) var(--face);
+  }
+  74%,
   100% {
+    opacity: 0;
+    transform: translateZ(calc(var(--gap) * -1 + 12px)) var(--face);
+  }
+}
+
+@keyframes plate-catch {
+  0%,
+  30%,
+  100% {
+    box-shadow: inset 0 0 0 1px var(--face-line);
+  }
+  4%,
+  16% {
+    box-shadow:
+      inset 0 0 0 1.5px var(--accent),
+      0 0 38px -8px rgb(255 106 19 / 70%);
+  }
+}
+
+@keyframes label-catch {
+  0%,
+  30%,
+  100% {
+    color: var(--muted);
+  }
+  4%,
+  16% {
     color: var(--accent-strong);
   }
 }
 
-@keyframes label-at-two-thirds {
+@keyframes row-catch {
   0%,
-  64% {
+  30%,
+  100% {
     color: var(--faint);
   }
-  68%,
-  100% {
-    color: var(--accent-strong);
-  }
-}
-
-@keyframes wire-draw {
-  from {
-    transform: scaleX(0);
-  }
-}
-
-@keyframes ignite-at-third {
-  0%,
-  31% {
-    background: var(--surface-3);
-    color: var(--faint);
-  }
-  35%,
-  100% {
-    background: var(--heat);
-    color: var(--accent-strong);
-  }
-}
-
-@keyframes ignite-at-two-thirds {
-  0%,
-  64% {
-    background: var(--surface-3);
-    color: var(--faint);
-  }
-  68%,
-  100% {
-    background: var(--heat);
+  4%,
+  16% {
     color: var(--accent-strong);
   }
 }
@@ -2080,14 +2315,36 @@ pre.outline .kw {
   color: var(--accent-strong);
 }
 
-.schematic-col h3 {
+.flow-rows {
+  display: grid;
+}
+
+.flow-row {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  column-gap: 14px;
+  padding: 22px 0 24px;
+  border-top: 1px solid var(--border);
+}
+
+.flow-row:last-child {
+  border-bottom: 1px solid var(--border);
+}
+
+.flow-row .col-kind {
+  grid-row: span 2;
+  padding-top: 5px;
+  color: var(--faint);
+}
+
+.flow-row h3 {
   font-size: 19px;
   font-variation-settings: "wdth" 112;
   letter-spacing: -0.015em;
-  margin: 8px 0 16px;
+  margin: 0 0 12px;
 }
 
-.schematic-col ul {
+.chips {
   list-style: none;
   padding: 0;
   margin: 0;
@@ -2096,7 +2353,7 @@ pre.outline .kw {
   gap: 6px;
 }
 
-.schematic-col li {
+.chips li {
   border: 1px solid var(--border);
   background: var(--surface-2);
   border-radius: 6px;
@@ -2104,21 +2361,8 @@ pre.outline .kw {
   font-size: 13px;
 }
 
-.schematic-col .mono-list {
-  flex-direction: column;
-  gap: 0;
-}
-
-.schematic-col .mono-list li {
-  background: none;
-  border: 0;
-  border-bottom: 1px dashed var(--border);
-  border-radius: 0;
-  padding: 7px 0;
-}
-
-.schematic-col .mono-list li:last-child {
-  border-bottom: 0;
+.chips .mono {
+  font-size: 12.5px;
 }
 
 .tpl-grid {
@@ -2129,6 +2373,46 @@ pre.outline .kw {
 
 .tpl-grid.three {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+/*
+ * 02, on the landing: each template card stands up from the page as it scrolls in (a row rises left
+ * to right) and leans toward the mouse.
+ */
+.tpl-slot {
+  --col: 0;
+  display: flex;
+  perspective: 1300px;
+  perspective-origin: 50% 0%;
+}
+
+.tpl-slot:nth-child(3n + 2) {
+  --col: 1;
+}
+
+.tpl-slot:nth-child(3n) {
+  --col: 2;
+}
+
+.tpl-stand {
+  --k: clamp(0, calc((var(--enter) - var(--col) * 0.12) / 0.76), 1);
+  flex: 1;
+  display: flex;
+  transform-origin: 50% 100%;
+  transform: translateY(calc((1 - var(--k)) * 28px)) rotateX(calc((1 - var(--k)) * 74deg));
+}
+
+/* At rest a card has no transform (crisp text); the lean exists only while hovered. */
+.tpl-stand > .tpl-card {
+  flex: 1;
+  transition:
+    transform 500ms var(--ease-out),
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+
+.tpl-stand > .tpl-card:hover {
+  transform: perspective(900px) rotateX(var(--ty, 0deg)) rotateY(var(--tx, 0deg)) translateZ(12px);
 }
 
 .tpl-card {
@@ -2226,12 +2510,88 @@ a.chip {
   background: var(--accent-soft);
 }
 
+/* 03: each guarantee lays one block as it is read; the stack is the record. */
+.holds {
+  /* At most the five blocks there are: the last one stays lit once the stack is complete. */
+  --build: min(var(--step), 5);
+  display: grid;
+  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
+  column-gap: 56px;
+}
+
+.tower-figure {
+  position: relative;
+}
+
+.tower-stage {
+  position: sticky;
+  top: calc(var(--header-h) + 5vh);
+  height: min(440px, 72vh);
+  perspective: 2200px;
+  perspective-origin: 50% 15%;
+  /* Blocks arrive through the top of the stage, never across the heading above it. */
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 24%);
+  mask-image: linear-gradient(to bottom, transparent, #000 24%);
+}
+
+.tower {
+  --iso-x: 58deg;
+  --iso-z: -44deg;
+  --iso-turn: 10deg;
+  top: 68%;
+}
+
+.tower-floor {
+  left: -160px;
+  top: -160px;
+  width: 320px;
+  height: 320px;
+}
+
+.tower-shadow {
+  left: -92px;
+  top: -92px;
+  width: 184px;
+  height: 184px;
+  transform: translateZ(1px);
+  opacity: clamp(0, calc(var(--build) * 0.9), 0.9);
+}
+
+.tblock {
+  --sw: 168px;
+  --sd: 168px;
+  --sh: 38px;
+  --k: clamp(0, calc(var(--build) - var(--i)), 1);
+  --fall: calc((1 - var(--k)) * (1 - var(--k)));
+  /* Lit while it falls and lands; it cools as the next block arrives. The top block stays lit. */
+  --g: clamp(0, calc(2 - (var(--build) - var(--i))), 1);
+  transform: translateZ(calc(var(--i) * 42px + var(--fall) * 220px));
+}
+
+.tblock .slab-face {
+  opacity: clamp(0, calc(var(--k) * 3), 1);
+}
+
+.tblock .slab-top {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--accent) calc(var(--g) * 100%), var(--face-line)),
+    0 0 calc(var(--g) * 34px) calc(var(--g) * -6px) rgb(255 106 19 / 45%);
+}
+
+.tblock-index {
+  position: absolute;
+  left: 14px;
+  bottom: 9px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  color: color-mix(in srgb, var(--accent-strong) calc(var(--g) * 100%), var(--faint));
+}
+
 .guarantees {
   list-style: none;
   counter-reset: g;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  column-gap: 56px;
   margin: 0;
   padding: 0;
 }
@@ -2240,8 +2600,12 @@ a.chip {
   counter-increment: g;
   display: grid;
   grid-template-columns: 48px minmax(0, 1fr);
-  padding: 22px 0;
+  padding: 30px 0;
   border-top: 1px solid var(--border);
+}
+
+.guarantees li:last-child {
+  border-bottom: 1px solid var(--border);
 }
 
 .guarantees li::before {
@@ -2256,7 +2620,7 @@ a.chip {
 
 .guarantees h3 {
   grid-column: 2;
-  font-size: 16.5px;
+  font-size: 17px;
   margin: 0 0 6px;
 }
 
@@ -2265,14 +2629,53 @@ a.chip {
   color: var(--muted);
   margin: 0;
   line-height: 1.6;
+  max-width: 58ch;
 }
 
-.instrument {
+/* 04: the status modules swing into their rack as the section comes in; each LED lights once seated. */
+.modules {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  border: 1px solid var(--border);
+  gap: 14px;
+}
+
+.module-slot {
+  --col: 0;
+  perspective: 1100px;
+  perspective-origin: 0% 50%;
+}
+
+.module-slot:nth-child(2) {
+  --col: 1;
+}
+
+.module-slot:nth-child(3) {
+  --col: 2;
+}
+
+.module {
+  --k: clamp(0, calc((var(--enter) - var(--col) * 0.14) / 0.72), 1);
+  --on: clamp(0, calc((var(--k) - 0.82) * 5.5), 1);
+  position: relative;
+  height: 100%;
+  border: 1px solid transparent;
   border-radius: var(--radius-lg);
-  background: var(--surface);
+  box-shadow: var(--shadow);
+  transform-origin: 0 50%;
+  transform: translateZ(calc((1 - var(--k)) * -170px)) rotateY(calc((1 - var(--k)) * 36deg));
+}
+
+/* Its thickness: a darker base along the bottom edge. */
+.module::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: -6px;
+  height: 6px;
+  border-radius: 0 0 8px 8px;
+  background: var(--face-shade);
+  box-shadow: inset 0 1px 0 var(--face-line);
 }
 
 .gauge {
@@ -2282,10 +2685,6 @@ a.chip {
   row-gap: 3px;
   padding: 18px 20px;
   align-items: center;
-}
-
-.gauge + .gauge {
-  border-left: 1px solid var(--border);
 }
 
 .gauge-dot {
@@ -2298,12 +2697,14 @@ a.chip {
 
 .gauge-dot.on {
   background: var(--ok);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 18%, transparent);
+  box-shadow:
+    0 0 0 calc(var(--on, 1) * 4px) color-mix(in srgb, var(--ok) 18%, transparent),
+    0 0 calc(var(--on, 1) * 14px) color-mix(in srgb, var(--ok) 40%, transparent);
 }
 
 .gauge-dot.off {
   background: var(--fail);
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--fail) 18%, transparent);
+  box-shadow: 0 0 0 calc(var(--on, 1) * 4px) color-mix(in srgb, var(--fail) 18%, transparent);
 }
 
 .gauge-label {
@@ -2322,12 +2723,13 @@ a.chip {
   overflow-wrap: anywhere;
 }
 
+/* The close: the line, and the spark that opened the page, turning as you reach it. */
 .statement {
   display: grid;
-  grid-template-columns: minmax(0, 1.5fr) minmax(0, 0.6fr);
+  grid-template-columns: minmax(0, 1.45fr) minmax(0, 0.65fr);
   gap: 48px;
-  align-items: end;
-  padding: 104px 0 96px;
+  align-items: center;
+  padding: 96px 0 88px;
   border-top: 1px solid var(--border);
 }
 
@@ -2343,8 +2745,7 @@ a.chip {
 .statement-side {
   display: flex;
   flex-direction: column;
-  gap: 22px;
-  padding-bottom: 12px;
+  gap: 20px;
 }
 
 .statement-side p {
@@ -2352,6 +2753,12 @@ a.chip {
   font-size: 16px;
   line-height: 1.6;
   max-width: 40ch;
+}
+
+.spark-object {
+  display: block;
+  width: 100%;
+  height: 230px;
 }
 
 .site-footer {
@@ -2515,21 +2922,71 @@ footer.site {
     row-gap: 28px;
     padding-top: 56px;
   }
-  .schematic,
-  .instrument {
+  .flow3d {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 4px;
+  }
+  .stack-figure {
+    height: 360px;
+  }
+  .stack {
+    --gap: calc(18px + var(--enter) * 72px);
+  }
+  .plate {
+    --sw: 156px;
+    --sd: 156px;
+  }
+  .stack-floor {
+    left: -140px;
+    top: -140px;
+    width: 280px;
+    height: 280px;
+  }
+  .stack-shadow {
+    left: -80px;
+    top: -80px;
+    width: 160px;
+    height: 160px;
+  }
+  .tpl-slot:nth-child(n) {
+    --col: 0;
+  }
+  .tpl-slot:nth-child(even) {
+    --col: 1;
+  }
+  /* The tower sits above the list here: it builds as it comes in rather than step by step. */
+  .holds {
+    --build: calc(var(--enter) * 5);
     grid-template-columns: minmax(0, 1fr);
   }
-  .schematic-col + .schematic-col,
-  .gauge + .gauge {
-    border-left: 0;
-    border-top: 1px solid var(--border);
+  .tower-stage {
+    position: relative;
+    top: 0;
+    height: 330px;
   }
-  .schematic-col + .schematic-col::before {
-    left: 26px;
-    top: -6px;
+  .tblock {
+    --sw: 132px;
+    --sd: 132px;
+    --sh: 30px;
+    transform: translateZ(calc(var(--i) * 33px + var(--fall) * 170px));
   }
-  .guarantees {
+  .tower-floor {
+    left: -130px;
+    top: -130px;
+    width: 260px;
+    height: 260px;
+  }
+  .tower-shadow {
+    left: -72px;
+    top: -72px;
+    width: 144px;
+    height: 144px;
+  }
+  .modules {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .spark-object {
+    height: 190px;
   }
   .tpl-grid.three {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2550,6 +3007,9 @@ footer.site {
 @media (max-width: 560px) {
   .tpl-grid.three {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .tpl-slot:nth-child(n) {
+    --col: 0;
   }
   /* Headers keep the brand, the nav and the way in; the block height lives on the landing. */
   .topbar > .chain-head,
@@ -2714,11 +3174,23 @@ footer.site {
     scroll-behavior: auto !important;
   }
   /* Scroll-linked and looping pieces: shown in their final state, still. */
-  .schematic-wire,
-  .schematic-col::before,
-  .schematic-col .col-kind,
-  .tape-track {
+  .tape-track,
+  .stack-spark,
+  .plate .slab-top,
+  .plate-label,
+  .flow-row .col-kind {
     animation: none !important;
+  }
+  [data-scene] {
+    --enter: 1 !important;
+    --p: 0.5 !important;
+    --step: 9 !important;
+  }
+  .stack-spark {
+    opacity: 0;
+  }
+  .flow-row .col-kind {
+    color: var(--accent-strong);
   }
   .tape {
     overflow-x: auto;
@@ -2726,6 +3198,7 @@ footer.site {
     mask-image: none;
   }
   .tpl-card:hover,
+  .tpl-stand > .tpl-card:hover,
   .btn:active:not(:disabled) {
     transform: none;
   }

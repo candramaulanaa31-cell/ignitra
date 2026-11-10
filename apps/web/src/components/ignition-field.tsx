@@ -104,6 +104,13 @@ export function IgnitionFieldHero({ actions, initialRuns, children }: { actions:
       field.setPointer({ x: e.clientX - r.left, y: e.clientY - r.top });
     };
     const onLeave = () => field.setPointer(null);
+    // Scrolling the hero away raises the field's camera.
+    const onScroll = () => {
+      const r = el.getBoundingClientRect();
+      field.setScroll(r.height > 0 ? -r.top / r.height : 0);
+    };
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
     document.addEventListener("visibilitychange", onVisibility);
     dark.addEventListener("change", onTheme);
     window.addEventListener(RUNS_EVENT, onRuns);
@@ -113,6 +120,7 @@ export function IgnitionFieldHero({ actions, initialRuns, children }: { actions:
       field.stop();
       ro.disconnect();
       io.disconnect();
+      window.removeEventListener("scroll", onScroll);
       document.removeEventListener("visibilitychange", onVisibility);
       dark.removeEventListener("change", onTheme);
       window.removeEventListener(RUNS_EVENT, onRuns);

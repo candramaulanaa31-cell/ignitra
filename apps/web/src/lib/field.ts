@@ -1,13 +1,17 @@
 /**
- * The ignition field: the landing hero, drawn on three canvases: a static back layer (haze, horizon,
- * orbit guides), a trail layer whose pixels fade each frame (comet trails), and a crisp overlay
- * cleared every frame (the core, the ports and their labels).
+ * The ignition field: the landing hero, drawn on three canvases: a back layer (haze, horizon, orbit
+ * guides; redrawn only when the camera moves), a trail layer whose pixels fade each frame (comet
+ * trails), and a crisp overlay cleared every frame (the core, the ports and their labels).
  *
  * It shows IGNITRA's job. Chain activity rises from the horizon (the chain) at the rate the listener
- * sees blocks, and circles the core (the matcher). When a real run happens on mainnet, one particle
+ * sees blocks, and circles the core (the matcher): the spark of the mark as a solid, turning, with
+ * the swarm passing behind and in front of it. When a real run happens on mainnet, one particle
  * ignites and shoots to its action's port, which shows that run. Block ticks and ignitions are real;
  * the ambient particles are an illustration of chain activity, and the page says so.
+ *
+ * Scrolling away raises the camera: the orbits open up from a low angle to a view from above.
  */
+import { drawSpark } from "./spark";
 
 export interface FieldTheme {
   dark: boolean;
@@ -56,7 +60,8 @@ interface Tick {
 }
 
 const TAU = Math.PI * 2;
-const FLAT = 0.36; // orbits are ellipses: a disc seen at an angle
+const FLAT = 0.36; // orbits are ellipses: a disc seen at a low angle...
+const FLAT_TOP = 0.74; // ...and from above, once the hero has scrolled away
 const TILT = -0.16; // radians
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
@@ -76,7 +81,12 @@ export class IgnitionField {
   #w = 0;
   #h = 0;
   #dpr = 1;
-  #core = { x: 0, y: 0, r0: 0, r1: 0, pulse: 0 };
+  #core = { x: 0, y: 0, r0: 0, r1: 0, s: 0, pulse: 0 };
+  #spin = 0;
+  #scroll = 0;
+  #scrollGoal = 0;
+  #flat = FLAT;
+  #backFlat = -1;
   #horizonY = 0;
   #riseFrom = { x0: 0, x1: 0 };
   #particles: Particle[] = [];
@@ -130,6 +140,7 @@ export class IgnitionField {
       y: wide ? height * 0.5 : height - 175,
       r0: base * 0.08,
       r1: wide ? base * 0.38 : Math.min(width * 0.42, 165),
+      s: clamp(base * 0.034, 14, 30), // the spark's radius: the inner orbits pass behind and in front of it
       pulse: 0,
     };
     this.#horizonY = wide ? height * 0.84 : height - 62;
@@ -168,6 +179,11 @@ export class IgnitionField {
 
   setPointer(point: { x: number; y: number } | null): void {
     this.#pointer = point;
+  }
+
+  /** How far the hero has scrolled away, 0 to 1: raises the camera over the orbits. */
+  setScroll(progress: number): void {
+    this.#scrollGoal = clamp(Number.isFinite(progress) ? progress : 0, 0, 1);
   }
 
   /** A real run: the nearest orbiting particle ignites and flies to the action's port, which then shows `label`. */
@@ -255,7 +271,7 @@ export class IgnitionField {
 
   #orbitPoint(a: number, r: number): { x: number; y: number } {
     const ex = Math.cos(a) * r;
-    const ey = Math.sin(a) * r * FLAT;
+    const ey = Math.sin(a) * r * this.#flat;
     return { x: this.#core.x + ex * Math.cos(TILT) - ey * Math.sin(TILT), y: this.#core.y + ex * Math.sin(TILT) + ey * Math.cos(TILT) };
   }
 
@@ -277,6 +293,10 @@ export class IgnitionField {
   }
 
   #step(dt: number): void {
+    // The camera follows the scroll, gliding rather than jumping with each wheel notch.
+    this.#scroll += (this.#scrollGoal - this.#scroll) * (1 - Math.exp(-6 * dt));
+    this.#flat = FLAT + (FLAT_TOP - FLAT) * ease(this.#scroll);
+    this.#spin += dt * (0.45 + this.#core.pulse * 2.6);
     // Activity rises from the chain at a rate tied to the real block rate.
     this.#riseCarry += riseRate(this.#blockRate) * dt;
     while (this.#riseCarry >= 1) {
@@ -307,6 +327,10 @@ export class IgnitionField {
     for (const p of this.#particles) {
       if (p.kind === "rise") {
         p.t += dt;
+        // Aim at where the orbit is now: the camera may have moved since the particle set off.
+        const end = this.#orbitPoint(p.a, p.r);
+        p.tx = end.x;
+        p.ty = end.y;
         const k = ease(Math.min(1, p.t / p.dur));
         p.x = quad(p.sx, p.cx, p.tx, k);
         p.y = quad(p.sy, p.cy, p.ty, k);
@@ -366,6 +390,7 @@ export class IgnitionField {
   #drawBack(): void {
     const g = this.#back;
     const { dark, guide } = this.#theme;
+    this.#backFlat = this.#flat;
     g.clearRect(0, 0, this.#w, this.#h);
     // Heat haze around the core.
     const haze = g.createRadialGradient(this.#core.x, this.#core.y, 0, this.#core.x, this.#core.y, this.#core.r1 * 1.25);
@@ -394,7 +419,7 @@ export class IgnitionField {
     g.setLineDash([2, 6]);
     for (const k of [0.45, 0.72, 1]) {
       g.beginPath();
-      g.ellipse(0, 0, this.#core.r1 * k, this.#core.r1 * k * FLAT, 0, 0, TAU);
+      g.ellipse(0, 0, this.#core.r1 * k, this.#core.r1 * k * this.#flat, 0, 0, TAU);
       g.strokeStyle = `rgba(${guide}, ${dark ? 0.16 : 0.22})`;
       g.lineWidth = 1;
       g.stroke();
@@ -402,26 +427,23 @@ export class IgnitionField {
     g.restore();
   }
 
+  /** The core: the spark as a solid, seen from the camera's height, flaring when a run goes through. */
   #drawCore(g: CanvasRenderingContext2D): void {
-    const { x, y, pulse } = this.#core;
-    const { dark, ink } = this.#theme;
-    const r = 9 + pulse * 4;
-    const glow = g.createRadialGradient(x, y, 0, x, y, 46 + pulse * 30);
-    glow.addColorStop(0, `rgba(255, 140, 50, ${0.35 + pulse * 0.4})`);
-    glow.addColorStop(1, "rgba(255, 106, 19, 0)");
-    g.fillStyle = glow;
-    g.beginPath();
-    g.arc(x, y, 46 + pulse * 30, 0, TAU);
-    g.fill();
-    g.beginPath();
-    g.arc(x, y, r, 0, TAU);
-    g.strokeStyle = dark ? "rgba(241, 236, 229, 0.95)" : `rgba(${ink}, 0.9)`;
-    g.lineWidth = 2.2;
-    g.stroke();
-    g.beginPath();
-    g.arc(x, y, 3, 0, TAU);
-    g.fillStyle = "#ffb547";
-    g.fill();
+    const { x, y, s, pulse } = this.#core;
+    drawSpark(g, x, y, s * (1 + pulse * 0.12), this.#spin, 0.28 + ease(this.#scroll) * 0.5, { dark: this.#theme.dark, heat: pulse });
+  }
+
+  /** Particles crossing in front of the core are drawn again over it, so the swarm wraps the solid. */
+  #drawFrontOfCore(g: CanvasRenderingContext2D): void {
+    const { x, y, s } = this.#core;
+    const reach = s * 1.9;
+    g.globalCompositeOperation = this.#theme.dark ? "lighter" : "source-over";
+    for (const p of this.#particles) {
+      if (Math.abs(p.x - x) > reach || Math.abs(p.y - y) > reach) continue;
+      const inFront = p.kind === "ignite" || p.kind === "rise" || Math.sin(p.a) > 0;
+      if (inFront) this.#drawParticle(g, p);
+    }
+    g.globalCompositeOperation = "source-over";
   }
 
   #drawPorts(g: CanvasRenderingContext2D): void {
@@ -486,6 +508,7 @@ export class IgnitionField {
   #draw(dt: number): void {
     const g = this.#front;
     const { dark } = this.#theme;
+    if (Math.abs(this.#flat - this.#backFlat) > 0.002) this.#drawBack(); // the guides follow the camera
     // Fade the previous frame: what moved leaves a trail.
     g.globalCompositeOperation = "destination-out";
     g.fillStyle = `rgba(0, 0, 0, ${clamp(dt * (dark ? 11 : 14), 0.12, 0.5).toFixed(3)})`;
@@ -504,6 +527,7 @@ export class IgnitionField {
     const o = this.#over;
     o.clearRect(0, 0, this.#w, this.#h);
     this.#drawCore(o);
+    this.#drawFrontOfCore(o);
     this.#drawPorts(o);
   }
 

@@ -5,6 +5,7 @@ import { shortHex, when } from "@/lib/format";
 import { RUNS_EVENT, type RunsSignal } from "./ignition-field";
 import { Odometer } from "./odometer";
 import { SignalPath } from "./signal";
+import { Lift } from "./solid";
 import { Badge } from "./ui";
 
 export interface DemoData {
@@ -103,53 +104,55 @@ export function LiveDemo({ initial }: { initial: DemoData }) {
 
   return (
     <>
-      <section className="card panel live-panel">
-        <div className="card-head">
-          <span className="row" style={{ gap: 8 }}>
-            <span className="live-dot" aria-hidden="true" />
-            <span className="label">Live on Robinhood Chain</span>
-          </span>
-          <span className="panel-stats mono">
-            <span>
-              <strong>
-                <Odometer value={data.stats.runs} />
-              </strong>{" "}
-              runs
+      <Lift>
+        <section className="card panel live-panel">
+          <div className="card-head">
+            <span className="row" style={{ gap: 8 }}>
+              <span className="live-dot" aria-hidden="true" />
+              <span className="label">Live on Robinhood Chain</span>
             </span>
-            <span>
-              <strong>{secs(data.latency_ms.p50)}</strong> block → done
+            <span className="panel-stats mono">
+              <span>
+                <strong>
+                  <Odometer value={data.stats.runs} />
+                </strong>{" "}
+                runs
+              </span>
+              <span>
+                <strong>{secs(data.latency_ms.p50)}</strong> block → done
+              </span>
             </span>
-          </span>
-        </div>
-        <div className="card-body">
-          <SignalPath lines={data.outline} pulse={data.status === "active" ? pulse : 0} />
-        </div>
-        {data.runs.length === 0 ? (
-          <div className="card-body muted small">Waiting for the next matching transfer…</div>
-        ) : (
-          <ul className="feed">
-            {data.runs.slice(0, 8).map((r, i) => (
-              <li key={runId(r)} className={fresh.has(runId(r)) ? "fresh" : undefined} style={{ animationDelay: fresh.has(runId(r)) ? `${i * 70}ms` : undefined }}>
-                <span className="mono faint when">{when(r.at).slice(11, 19)}</span>
-                <span className="mono ellipsis">
-                  {r.tx_hash ? (
-                    <a href={`${EXPLORER}/tx/${r.tx_hash}`} target="_blank" rel="noreferrer">
-                      {r.summary ?? shortHex(r.tx_hash)}
-                    </a>
-                  ) : (
-                    (r.summary ?? "—")
-                  )}
-                </span>
-                <span className="feed-end">
-                  <span className="mono faint">{secs(r.latency_ms)}</span>
-                  <Badge status={r.status} text={r.status === "succeeded" ? "done" : r.status} />
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-        <div className="panel-foot mono">times in WIB · each row is a real run, refreshed every 5 s</div>
-      </section>
+          </div>
+          <div className="card-body">
+            <SignalPath lines={data.outline} pulse={data.status === "active" ? pulse : 0} />
+          </div>
+          {data.runs.length === 0 ? (
+            <div className="card-body muted small">Waiting for the next matching transfer…</div>
+          ) : (
+            <ul className="feed">
+              {data.runs.slice(0, 8).map((r, i) => (
+                <li key={runId(r)} className={fresh.has(runId(r)) ? "fresh" : undefined} style={{ animationDelay: fresh.has(runId(r)) ? `${i * 70}ms` : undefined }}>
+                  <span className="mono faint when">{when(r.at).slice(11, 19)}</span>
+                  <span className="mono ellipsis">
+                    {r.tx_hash ? (
+                      <a href={`${EXPLORER}/tx/${r.tx_hash}`} target="_blank" rel="noreferrer">
+                        {r.summary ?? shortHex(r.tx_hash)}
+                      </a>
+                    ) : (
+                      (r.summary ?? "—")
+                    )}
+                  </span>
+                  <span className="feed-end">
+                    <span className="mono faint">{secs(r.latency_ms)}</span>
+                    <Badge status={r.status} text={r.status === "succeeded" ? "done" : r.status} />
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="panel-foot mono">times in WIB · each row is a real run, refreshed every 5 s</div>
+        </section>
+      </Lift>
       <ChainTape runs={data.runs} />
     </>
   );
