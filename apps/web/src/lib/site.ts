@@ -7,6 +7,9 @@ export const SITE_URL = (
   process.env.WEB_URL ?? (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "http://localhost:3000")
 ).replace(/\/+$/, "");
 
+/** The source code (AGPL-3.0): linked from the site so every user can get it. */
+export const SOURCE_URL = "https://github.com/candramaulanaa31-cell/ignitra";
+
 /** The docs pages, in reading order: the docs navigation and the sitemap. */
 export const DOC_PAGES = [
   ["/docs", "Overview"],

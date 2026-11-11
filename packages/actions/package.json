@@ -2,6 +2,7 @@
   "name": "@ignitra/actions",
   "version": "0.1.0",
   "private": true,
+  "license": "AGPL-3.0-only",
   "type": "module",
   "description": "Run execution: SSRF-safe HTTP, action modules (WEBHOOK, TELEGRAM, WEB_PUSH), connections, Postgres run queue and executor.",
   "exports": {

@@ -2,6 +2,7 @@
   "name": "@ignitra/engine",
   "version": "0.1.0",
   "private": true,
+  "license": "AGPL-3.0-only",
   "type": "module",
   "description": "Trigger modules, enrichment, flow service and the matcher that turns chain events into queued runs.",
   "exports": {

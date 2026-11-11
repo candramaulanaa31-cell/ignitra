@@ -11,6 +11,7 @@ import { Lift, Slab } from "@/components/solid";
 import { SparkObject } from "@/components/spark-object";
 import { LABELS, label } from "@/lib/format";
 import { serverGet } from "@/lib/server-api";
+import { SOURCE_URL } from "@/lib/site";
 
 // Regenerated at most every 5 s however many people visit (the live demo then polls on the client).
 export const revalidate = 5;
@@ -323,6 +324,9 @@ export default async function Home() {
           <Link href="/docs/api">API</Link>
           <Link href="/docs/sdk">SDK</Link>
           <Link href="/docs/webhooks">Webhooks</Link>
+          <a href={SOURCE_URL} target="_blank" rel="noreferrer">
+            Source code (AGPL)
+          </a>
         </nav>
         <nav aria-label="Chain">
           <h4>Chain</h4>

@@ -774,3 +774,11 @@ Matching took 0.03 s, a runner claimed the run 0.6 s later, and the webhook took
 7. **Templates + public surface** ✅ 14 official templates, gallery, use / share templates, landing with a live demo, docs
 8. **SDK, integrations, scoped onchain actions** ✅ API keys, `@ignitra/sdk`, VIGIL / TRUST LAYER / MANDATE / Pons, ONCHAIN_TX via Safe + Zodiac Roles v2
 9. **Hardening + launch** ✅ (account-bound checks pending) audit log, dead letters, gap detector, metrics, key rotation, backups, permission review, trigger matrix on a fork
+
+## License
+
+IGNITRA is free software under the GNU Affero General Public License, version 3 only ([LICENSE](LICENSE)). You may use it, change it and run it yourself. If you run a modified version as a network service, you must offer its users the modified source code (section 13). The web app's footer links to the source so that the offer is always one click away.
+
+The SDK in `packages/sdk` (`@ignitra/sdk` on npm) is MIT-licensed ([packages/sdk/LICENSE](packages/sdk/LICENSE)), so it can go into any project, open or closed.
+
+Copyright (C) 2026 candra.

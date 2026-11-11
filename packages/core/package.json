@@ -2,6 +2,7 @@
   "name": "@ignitra/core",
   "version": "0.1.0",
   "private": true,
+  "license": "AGPL-3.0-only",
   "type": "module",
   "description": "Isomorphic domain core: chain config, addresses, ids, flow schemas, registries. Server-only helpers live under @ignitra/core/server.",
   "exports": {

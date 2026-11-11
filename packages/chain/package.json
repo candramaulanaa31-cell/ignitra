@@ -2,6 +2,7 @@
   "name": "@ignitra/chain",
   "version": "0.1.0",
   "private": true,
+  "license": "AGPL-3.0-only",
   "type": "module",
   "description": "Chain access: RPC reader with failover, built-in ABIs, event decoder, explorer ABI registry. Test doubles under @ignitra/chain/testing.",
   "exports": {
