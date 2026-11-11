@@ -1,0 +1,49 @@
+# Every push to main and every pull request: install from the lockfile, typecheck and test every
+# package, and build the web app. On the lowest Node the project supports (engines: >=22.12) and on
+# the LTS it runs on in production (24). Fork tests stay off: they need FORK_TESTS and an anvil fork.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: check (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      # The pnpm version comes from packageManager in package.json.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck and test
+        run: pnpm check
+
+      - name: Build the web app
+        run: pnpm build
+        env:
+          # Nothing listens there: the build must not depend on a running API.
+          API_URL: http://127.0.0.1:9
+          WEB_URL: https://app.example.com
