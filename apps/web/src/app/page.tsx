@@ -7,6 +7,7 @@ import { LiveDemo, type DemoData } from "@/components/live-demo";
 import { ScrollScenes } from "@/components/scroll-scenes";
 import { SignalPath } from "@/components/signal";
 import { SiteHeader } from "@/components/site-header";
+import { SmoothScroll } from "@/components/smooth-scroll";
 import { Lift, Slab } from "@/components/solid";
 import { SparkObject } from "@/components/spark-object";
 import { LABELS, label } from "@/lib/format";
@@ -306,6 +307,7 @@ export default async function Home() {
           </div>
         </section>
         <ScrollScenes />
+        <SmoothScroll />
       </main>
       <footer className="site-footer">
         <div className="footer-brand">

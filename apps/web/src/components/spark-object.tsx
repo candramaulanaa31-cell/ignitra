@@ -104,15 +104,20 @@ export function SparkObject() {
       for (const ring of rings) halfRing(ring, true, cx, cy, dark);
     };
 
-    const fit = () => {
+    // 1:1 with the screen's physical pixels on 1.5x screens and up; an exact 2:1 supersample on
+    // low-density ones (the hero's field does the same).
+    const fit = (device?: { width: number; height: number }) => {
       const box = canvas.getBoundingClientRect();
-      // Rendered above the screen's pixel ratio: clean facets and wakes on 1x-1.5x screens too.
-      const dpr = Math.min(3, Math.max(2, window.devicePixelRatio || 1));
+      const dpr = window.devicePixelRatio || 1;
+      const k = dpr < 1.5 ? 2 : 1;
       w = box.width;
       h = box.height;
-      canvas.width = Math.round(w * dpr);
-      canvas.height = Math.round(h * dpr);
-      g.setTransform(dpr, 0, 0, dpr, 0, 0);
+      if (w <= 0 || h <= 0) return;
+      // The reported device size counts only when it agrees with the pixel ratio (emulators can disagree).
+      const dev = device && Math.abs(device.width - w * dpr) <= 2 && Math.abs(device.height - h * dpr) <= 2 ? device : null;
+      canvas.width = Math.max(1, Math.round((dev?.width ?? w * dpr) * k));
+      canvas.height = Math.max(1, Math.round((dev?.height ?? h * dpr) * k));
+      g.setTransform(canvas.width / w, 0, 0, canvas.height / h, 0, 0);
       g.imageSmoothingQuality = "high";
       draw();
     };
@@ -134,8 +139,15 @@ export function SparkObject() {
     };
 
     fit();
-    const ro = new ResizeObserver(fit);
-    ro.observe(canvas);
+    const ro = new ResizeObserver((entries) => {
+      const size = entries[0]?.devicePixelContentBoxSize?.[0];
+      fit(size ? { width: size.inlineSize, height: size.blockSize } : undefined);
+    });
+    try {
+      ro.observe(canvas, { box: "device-pixel-content-box" });
+    } catch {
+      ro.observe(canvas);
+    }
     const io = new IntersectionObserver((entries) => {
       visible = entries.some((e) => e.isIntersecting);
       sync();

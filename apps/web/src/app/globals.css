@@ -1552,11 +1552,11 @@ pre.outline .kw {
   padding: 5px 5px 5px 15px;
   border: 1px solid transparent;
   border-radius: 999px;
+  /* Nearly opaque instead of a backdrop blur: the canvas under it moves every frame, and a blur
+     would be recomputed every frame with it. */
   background:
-    linear-gradient(color-mix(in srgb, var(--surface) 80%, transparent), color-mix(in srgb, var(--surface) 80%, transparent)) padding-box,
+    linear-gradient(color-mix(in srgb, var(--surface) 93%, transparent), color-mix(in srgb, var(--surface) 93%, transparent)) padding-box,
     linear-gradient(180deg, var(--edge-hi), var(--edge-lo)) border-box;
-  -webkit-backdrop-filter: blur(10px);
-  backdrop-filter: blur(10px);
   box-shadow: var(--shadow);
   font-family: var(--font-mono);
   font-size: 12px;
@@ -2608,11 +2608,19 @@ a.chip {
   opacity: clamp(0, calc(var(--k) * 3), 1);
 }
 
-.tblock .slab-top {
+/* A block's glow is a layer of its own: as the tower builds only its opacity changes, so the
+   compositor fades it and the blurred shadow is never repainted. */
+.tblock .slab-top::after {
+  content: "";
+  position: absolute;
+  inset: 0;
   box-shadow:
-    inset 1px 1px 0 color-mix(in srgb, var(--accent) calc(var(--g) * 100%), var(--face-edge)),
-    inset -1px -1px 0 color-mix(in srgb, var(--accent) calc(var(--g) * 100%), var(--face-line)),
-    0 0 calc(var(--g) * 34px) calc(var(--g) * -6px) rgb(255 106 19 / 45%);
+    inset 1px 1px 0 var(--accent),
+    inset -1px -1px 0 var(--accent),
+    0 0 34px -6px rgb(255 106 19 / 45%);
+  opacity: var(--g);
+  will-change: opacity;
+  pointer-events: none;
 }
 
 .tblock-index {
@@ -2796,6 +2804,40 @@ a.chip {
   display: block;
   width: 100%;
   height: 230px;
+}
+
+/* In-page links (#status) land with the heading clear of the sticky header, smooth scrolling or not
+   (Lenis honours scroll-margin too). The extra room covers a heading still sliding into place. */
+.landing [id] {
+  scroll-margin-top: calc(var(--header-h) + 40px);
+}
+
+/* Smooth wheel scrolling on the landing (components/smooth-scroll.tsx): Lenis's own rules. */
+html.lenis,
+html.lenis body {
+  height: auto;
+}
+
+.lenis:not(.lenis-autoToggle).lenis-stopped {
+  overflow: clip;
+}
+
+.lenis [data-lenis-prevent],
+.lenis [data-lenis-prevent-wheel],
+.lenis [data-lenis-prevent-touch],
+.lenis [data-lenis-prevent-vertical],
+.lenis [data-lenis-prevent-horizontal] {
+  overscroll-behavior: contain;
+}
+
+.lenis.lenis-smooth iframe {
+  pointer-events: none;
+}
+
+.lenis.lenis-autoToggle {
+  transition-property: overflow;
+  transition-duration: 1ms;
+  transition-behavior: allow-discrete;
 }
 
 /* 404 and error pages: the landing's voice in one column; the 404 reads as a flow that stopped at IF. */

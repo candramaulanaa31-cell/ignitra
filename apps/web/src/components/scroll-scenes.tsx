@@ -25,6 +25,8 @@ interface Scene {
 const SHOW_AT = 0.16;
 /** Spring pace: about 0.7 s to settle, soft at both ends. */
 const OMEGA = 8.5;
+/** With smooth scrolling (components/smooth-scroll.tsx) the scroll already glides: follow it more closely. */
+const OMEGA_SMOOTH = 16;
 
 /**
  * Drives the landing's scroll scenes. Every [data-scene] element gets --enter (0 → 1 as it comes
@@ -106,13 +108,14 @@ export function ScrollScenes() {
       last = now;
       const y = window.scrollY;
       const vh = window.innerHeight;
+      const omega = root.classList.contains("lenis") ? OMEGA_SMOOTH : OMEGA;
       let moving = false;
       for (const s of scenes) {
         aim(s, y, vh);
         for (const k of KEYS) {
           const spring = s.spring[k];
           if (spring.x === s.goal[k] && spring.v === 0) continue;
-          if (springTo(spring, s.goal[k], dt, OMEGA)) moving = true;
+          if (springTo(spring, s.goal[k], dt, omega)) moving = true;
           write(s, k);
         }
       }

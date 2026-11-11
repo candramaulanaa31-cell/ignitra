@@ -60,9 +60,11 @@ export function IgnitionFieldHero({ actions, initialRuns, children }: { actions:
     const dark = matchMedia("(prefers-color-scheme: dark)");
     const field = new IgnitionField(back.current, front.current, readTheme(el), actionKey.split("|").filter(Boolean));
     engine.current = field;
-    const fit = () => {
-      const r = el.getBoundingClientRect();
-      field.resize(r.width, r.height);
+    const canvas = front.current;
+    // The canvases' exact device-pixel size (when the browser reports it) keeps them 1:1 with the screen.
+    const fit = (device?: { width: number; height: number }) => {
+      const r = canvas.getBoundingClientRect();
+      field.resize(r.width, r.height, device);
     };
     fit();
     let stored = false;
@@ -84,8 +86,15 @@ export function IgnitionFieldHero({ actions, initialRuns, children }: { actions:
     };
     sync.current();
 
-    const ro = new ResizeObserver(fit);
-    ro.observe(el);
+    const ro = new ResizeObserver((entries) => {
+      const box = entries[0]?.devicePixelContentBoxSize?.[0];
+      fit(box ? { width: box.inlineSize, height: box.blockSize } : undefined);
+    });
+    try {
+      ro.observe(canvas, { box: "device-pixel-content-box" });
+    } catch {
+      ro.observe(canvas); // browsers without device-pixel boxes: rounded CSS size × ratio
+    }
     const io = new IntersectionObserver((entries) => {
       visible = entries.some((e) => e.isIntersecting);
       sync.current();

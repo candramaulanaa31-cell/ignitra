@@ -12,9 +12,12 @@
  * ignites and shoots to its action's port, which shows that run. Block ticks and ignitions are real;
  * the ambient particles are an illustration of chain activity, and the page says so.
  *
- * Scrolling away raises the camera: the orbits open up from a low angle to a view from above. The
- * canvases render above the screen's pixel ratio (at least 2x) for clean edges, and step down if the
- * device cannot hold a steady frame rate.
+ * Scrolling away raises the camera: the orbits open up from a low angle to a view from above.
+ *
+ * Sharpness: the canvases map 1:1 onto the screen's physical pixels (the browser reports their exact
+ * device-pixel size), so nothing is resampled on a 1.5x or 2x screen. Low-density screens get an
+ * exact 2:1 supersample instead. If the device cannot hold a steady frame rate, the resolution
+ * steps down.
  */
 import { springTo, type Spring } from "./scenes";
 import { drawSpark } from "./spark";
@@ -131,7 +134,10 @@ export class IgnitionField {
   #ember: HTMLCanvasElement | null = null; // an ignition's glow
   #w = 0;
   #h = 0;
-  #dpr = 1;
+  /** Canvas pixels per device pixel in use (see #scale). */
+  #k = 1;
+  /** The canvases' exact size in device pixels, when the browser reports it. */
+  #device: { width: number; height: number } | null = null;
   #quality: Quality = "high";
   #slow = 0;
   #core = { x: 0, y: 0, r0: 0, r1: 0, s: 0, pulse: 0 };
@@ -175,17 +181,29 @@ export class IgnitionField {
     if (!this.#running) this.#drawStill();
   }
 
-  /** Lays the field out for the canvas size; seeds an orbit so the first frame is already alive. */
-  resize(width: number, height: number): void {
-    this.#dpr = this.#pixelRatio();
+  /**
+   * Lays the field out for the canvas size in CSS pixels, and `device`, its exact size in device
+   * pixels when known. Seeds an orbit so the first frame is already alive.
+   */
+  resize(width: number, height: number, device?: { width: number; height: number }): void {
+    if (width <= 0 || height <= 0) return;
+    if (device) this.#device = device;
+    const dpr = window.devicePixelRatio || 1;
+    this.#k = this.#scale();
+    // Trust the reported device size only when it agrees with the pixel ratio (emulators can disagree).
+    const agrees = (d: number, css: number) => Math.abs(d - css * dpr) <= 2;
+    const dev = this.#device && agrees(this.#device.width, width) && agrees(this.#device.height, height) ? this.#device : null;
+    const backingW = Math.max(1, Math.round((dev?.width ?? width * dpr) * this.#k));
+    const backingH = Math.max(1, Math.round((dev?.height ?? height * dpr) * this.#k));
     this.#w = width;
     this.#h = height;
     for (const c of this.#canvases) {
-      c.width = Math.round(width * this.#dpr);
-      c.height = Math.round(height * this.#dpr);
+      c.width = backingW;
+      c.height = backingH;
     }
+    // Draw in CSS pixels; the transform maps them onto the backing pixels exactly.
     for (const g of [this.#back, this.#front]) {
-      g.setTransform(this.#dpr, 0, 0, this.#dpr, 0, 0);
+      g.setTransform(backingW / width, 0, 0, backingH / height, 0, 0);
       g.imageSmoothingQuality = "high";
     }
     const wide = width >= 960; // the same breakpoint as the CSS that stacks the hero
@@ -304,11 +322,16 @@ export class IgnitionField {
 
   // ---- quality ---------------------------------------------------------------------------------
 
-  #pixelRatio(): number {
-    const screen = window.devicePixelRatio || 1;
-    if (this.#quality === "high") return Math.min(3, Math.max(2, screen)); // supersampled on 1x-1.5x screens
-    if (this.#quality === "native") return Math.min(2, screen);
-    return 1;
+  /**
+   * Canvas pixels per device pixel. One on 1.5x screens and up: a 1:1 map, nothing resampled. Two on
+   * low-density screens: an exact 2:1 supersample, which the browser averages cleanly (a 2x canvas
+   * on a 1.5x screen would be resampled at 1.33:1 and blur). Stepped down, one per CSS pixel.
+   */
+  #scale(): number {
+    const dpr = window.devicePixelRatio || 1;
+    if (this.#quality === "high") return dpr < 1.5 ? 2 : 1;
+    if (this.#quality === "native") return 1;
+    return 1 / dpr;
   }
 
   /**
@@ -322,7 +345,7 @@ export class IgnitionField {
     if (this.#slow < 45) return;
     this.#slow = 0;
     this.#quality = this.#quality === "high" ? "native" : "low";
-    if (this.#pixelRatio() !== this.#dpr) this.resize(this.#w, this.#h);
+    if (this.#scale() !== this.#k) this.resize(this.#w, this.#h);
   }
 
   #makeSprites(): void {

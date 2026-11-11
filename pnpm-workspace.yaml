@@ -29,3 +29,5 @@ catalog:
   "@types/web-push": ^3.6.4
   http_ece: 1.2.0
   croner: 10.0.1
+  # Smooth wheel scrolling on the landing page (web only).
+  lenis: 1.3.27
