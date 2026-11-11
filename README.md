@@ -523,7 +523,7 @@ Not exercised live: the Email and Sheets templates against real accounts (the ac
 - Inbound hooks and VIGIL deliveries are limited per hook or connection. Failed lookups (unknown URL, bad token or signature) also spend a 120/min budget of the sender's address, so guessing is bounded while one sender delivering for many users is not.
 - Answers carry `RateLimit-Limit`, `-Remaining` and `-Reset`, plus `Retry-After` on a 429.
 
-**`@ignitra/sdk`** (`packages/sdk`, README there). Dependency-free ESM for Node 20+, Deno, Bun, browsers and edge runtimes.
+**`@ignitra/sdk`** (`packages/sdk`, README there), on npm: `npm install @ignitra/sdk`. Dependency-free ESM for Node 20+, Deno, Bun, browsers and edge runtimes.
 
 - Covers flows (`iterateRuns` pages for you), runs and traces, connections (incl. `setVigilSecret`), templates, catalogs and the account.
 - `parseWebhook`, `verifyWebhookSignature` and `signWebhookPayload` use WebCrypto.
@@ -579,7 +579,10 @@ Not validated live yet:
 
 - **A run started by a real VIGIL alert.** Three watches on busy wallets raised no alert in about 15 minutes. Such an alert takes the path VIGIL's test request took.
 - **ONCHAIN_TX on mainnet.** It needs a Safe we own; the fork test proves it.
-- **The npm release.** Log in to npm and create the `ignitra` organization, then `pnpm release:sdk`. It must be pnpm: it publishes the `dist` entry points from `publishConfig`, and `prepublishOnly` runs the typecheck and tests first.
+
+**The npm release.** `@ignitra/sdk@0.1.0` was published on 2026-11-11 by the `ignitra` organization. The tarball on the registry is byte-identical to the local pack (same sha512, signed by the registry), and a clean `npm install @ignitra/sdk` imports it.
+
+To release a new version, bump `version` in `packages/sdk/package.json` and run `pnpm release:sdk` in an interactive terminal. It must be pnpm: it publishes the `dist` entry points from `publishConfig`, and `prepublishOnly` runs the typecheck and tests first. The account has 2FA, so npm asks for an approval in the browser. Without a terminal, publish the tarball from `pnpm pack` and answer the same approval. A brand-new package shows a temporary `0.0.0-stage` placeholder version, and `latest` points to the real one.
 
 ## Hardening and operations
 
@@ -682,7 +685,7 @@ Web Push through a real push service (2026-11-08). Headless Edge with the produc
 
 This run found a real bug, now fixed. A request sent 24 ms after its flow was created never ran: the matcher's flow index was cached and the stream's offset moved past the request. Rows newer than the index are now matched with an index read after them, and a regression test covers confirmed, fast and inbound flows.
 
-Still open: the npm release; Web Push on a phone; real Resend and Google accounts; a run from an organic VIGIL alert; ONCHAIN_TX on mainnet (it needs a Safe we own; the fork test covers it).
+Still open: Web Push on a phone; real Resend and Google accounts; a run from an organic VIGIL alert; ONCHAIN_TX on mainnet (it needs a Safe we own; the fork test covers it).
 
 ## Deploying
 
@@ -762,5 +765,5 @@ Matching took 0.03 s, a runner claimed the run 0.6 s later, and the webhook took
 5. **Accounts and API** ✅ SIWE (EOA + ERC-1271), connections and flows API, SCHEDULE / STATE_CHANGE / INBOUND_WEBHOOK, CHAIN_READ, plan limits + metering
 6. **Builder UI** ✅ builder, live samples, Test flow, variable picker, dashboard, run traces, HTTP_REQUEST / EMAIL / GOOGLE_SHEETS, PWA
 7. **Templates + public surface** ✅ 14 official templates, gallery, use / share templates, landing with a live demo, docs
-8. **SDK, integrations, scoped onchain actions** ✅ (npm release pending) API keys, `@ignitra/sdk`, VIGIL / TRUST LAYER / MANDATE / Pons, ONCHAIN_TX via Safe + Zodiac Roles v2
-9. **Hardening + launch** ✅ (npm release and account-bound checks pending) audit log, dead letters, gap detector, metrics, key rotation, backups, permission review, trigger matrix on a fork
+8. **SDK, integrations, scoped onchain actions** ✅ API keys, `@ignitra/sdk`, VIGIL / TRUST LAYER / MANDATE / Pons, ONCHAIN_TX via Safe + Zodiac Roles v2
+9. **Hardening + launch** ✅ (account-bound checks pending) audit log, dead letters, gap detector, metrics, key rotation, backups, permission review, trigger matrix on a fork
