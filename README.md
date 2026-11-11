@@ -691,9 +691,16 @@ Still open: Web Push on a phone; real Resend and Google accounts; a run from an 
 
 The low-cost layout from the plan: the web app on Vercel, one small VPS for the API, listener and runner, and Postgres on Neon (or Supabase). The files are in `deploy/`. They have not been run on a VPS yet. The multi-process setup itself was rehearsed on real Postgres (below).
 
+**`deploy/CHECKLIST.md` is the step-by-step launch list**: accounts, DNS, every variable and where it comes from, Vercel settings, and checks. Two scripts do the server work:
+
+- `deploy/bootstrap.sh`, once, as root on a fresh Ubuntu or Debian VPS: `API_DOMAIN=api.example.com bash bootstrap.sh`. It installs Node.js 24 (LTS), pnpm, Caddy and rsync, creates the `ignitra` user and directories, and sets up the firewall (SSH, 80, 443), Caddy, the systemd units and the nightly backup. It is safe to run again; `DRY_RUN=1` prints the commands instead.
+- `deploy/push.sh root@host`, from your machine, for the first deploy and every update. It ships `git archive HEAD`, installs, migrates, and runs `pnpm ops doctor`. It restarts the services only if the preflight passes.
+
+What the scripts do, by hand:
+
 1. **Postgres.** Create a Neon project and use its direct (unpooled) connection string as `DATABASE_URL`. Each service keeps at most 10 connections.
 2. **VPS** (1 vCPU, 1–2 GB). Install Node 22.12+ and pnpm (`corepack enable`), create a user `ignitra`, put the repo in `/opt/ignitra` and run `pnpm install --frozen-lockfile`. Do not use `--prod`: the services run TypeScript through tsx, a dev dependency.
-3. **Configuration.** Copy `.env.example` to `/etc/ignitra/ignitra.env` (mode 600, group `ignitra`), one `KEY=value` per line; quote values with spaces. Fill the secrets (`pnpm gen:secret`, `pnpm gen:vapid`) and the public URLs:
+3. **Configuration.** Copy `.env.example` to `/etc/ignitra/ignitra.env` (owner root, group `ignitra`, mode 640: systemd reads it as root, and migrations and backups run as `ignitra`). Write one `KEY=value` per line, and quote values with spaces. Fill the secrets (`pnpm gen:secret`, `pnpm gen:vapid`) and the public URLs:
 
    ```
    API_PORT=4000
@@ -706,10 +713,10 @@ The low-cost layout from the plan: the web app on Vercel, one small VPS for the 
 
 4. **Schema and preflight.** `pnpm db:migrate`, then `pnpm ops doctor` until nothing fails.
 5. **Services.** Copy `deploy/systemd/*.service` to `/etc/systemd/system/`, then `systemctl enable --now ignitra-api ignitra-listener ignitra-runner`. Put Caddy in front of the API (`deploy/Caddyfile`); it handles the certificate. Open only SSH, 80 and 443 in the firewall: the services listen on 127.0.0.1.
-6. **Web app on Vercel.** Set the root directory to `apps/web` and include files outside it (the workspace packages). Set `API_URL=https://api.example.com`. It is read at build time, so redeploy after changing it.
+6. **Web app on Vercel.** Set the root directory to `apps/web` and include files outside it (the workspace packages). Set `API_URL=https://api.example.com` (read at build time, so redeploy after changing it) and `WEB_URL=https://app.example.com` (it makes share cards, the sitemap and template links absolute).
 7. **Backups and monitoring.** Run `deploy/backup.sh` from cron: nightly, verified, kept 14 days. Add an uptime check on `https://api.example.com/health`, and scrape `127.0.0.1:4001/metrics` on the box with the alerts above.
 
-To update: `git pull && pnpm install --frozen-lockfile && pnpm db:migrate && pnpm ops doctor`, then restart the three services. The listener resumes from its cursors, and runs in flight are reclaimed when their lease expires.
+To update, run `deploy/push.sh` again. By hand, that is `pnpm install --frozen-lockfile && pnpm db:migrate && pnpm ops doctor`, then a restart of the three services. The listener resumes from its cursors, and runs in flight are reclaimed when their lease expires.
 
 **Production rehearsal (2026-11-08).** PostgreSQL 17.10 on the test machine (the server's TimeZone was Asia/Bangkok). The API, the listener (sync + matcher) and two runners ran as separate processes against mainnet, with the production web build and headless Edge, for 400 s. Migrations went through node-postgres, and `pnpm ops doctor` passed.
 

@@ -3,7 +3,7 @@
 #
 #   API_DOMAIN=api.example.com bash bootstrap.sh
 #
-# It installs Node.js 22 (NodeSource's signed apt repository), pnpm (corepack), Caddy (its signed
+# It installs Node.js 24 LTS (NodeSource's signed apt repository), pnpm (corepack), Caddy (its signed
 # apt repository) and rsync; creates the `ignitra` user and its directories; opens only SSH, 80 and
 # 443; writes the Caddyfile for API_DOMAIN; installs the systemd units once the code is there; and
 # schedules the nightly backup. Safe to run again. It starts nothing: fill /etc/ignitra/ignitra.env
@@ -13,7 +13,7 @@
 set -euo pipefail
 
 API_DOMAIN=${API_DOMAIN:-}
-NODE_MAJOR=${NODE_MAJOR:-22}
+NODE_MAJOR=${NODE_MAJOR:-24}
 DRY_RUN=${DRY_RUN:-0}
 ROOT=/opt/ignitra
 ENV_DIR=/etc/ignitra
