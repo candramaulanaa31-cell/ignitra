@@ -6,6 +6,7 @@ import { Outline, SiteHeader } from "@/components/site-header";
 import { CopyButton } from "@/components/ui";
 import { label, shortHex } from "@/lib/format";
 import { ApiUnavailableError, serverGetCached } from "@/lib/server-api";
+import { SITE_URL } from "@/lib/site";
 import { CATEGORY_LABELS, officialDetail, shareOnX, type TemplateDetail } from "@/lib/template-types";
 
 export const revalidate = 60;
@@ -15,7 +16,7 @@ export function generateStaticParams(): Array<{ slug: string }> {
   return OFFICIAL_TEMPLATES.map((t) => ({ slug: t.slug }));
 }
 
-const WEB_URL = (process.env.WEB_URL ?? "http://localhost:3000").replace(/\/+$/, "");
+const WEB_URL = SITE_URL;
 
 async function load(slug: string): Promise<TemplateDetail | null> {
   try {
@@ -31,7 +32,8 @@ async function load(slug: string): Promise<TemplateDetail | null> {
 
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
   const t = await load((await params).slug);
-  return t ? { title: t.name, description: t.summary, openGraph: { title: t.name, description: t.summary } } : { title: "Template not found" };
+  // A page's openGraph replaces the layout's, so it repeats the site-wide fields.
+  return t ? { title: t.name, description: t.summary, openGraph: { type: "website", siteName: "IGNITRA", locale: "en_US", title: t.name, description: t.summary } } : { title: "Template not found" };
 }
 
 const TYPE_HINT: Record<string, string> = {

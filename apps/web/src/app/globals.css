@@ -2798,6 +2798,30 @@ a.chip {
   height: 230px;
 }
 
+/* 404 and error pages: the landing's voice in one column; the 404 reads as a flow that stopped at IF. */
+.lost {
+  max-width: 760px;
+  padding: 72px 0 104px;
+}
+
+.lost .display {
+  margin: 0;
+  font-size: clamp(40px, 6vw, 72px);
+}
+
+.lost .lede {
+  margin-top: 22px;
+  max-width: 56ch;
+}
+
+.lost-path {
+  margin: 34px 0 32px;
+}
+
+.lost-ref {
+  margin-top: 28px;
+}
+
 .site-footer {
   display: grid;
   grid-template-columns: minmax(0, 1.7fr) repeat(3, minmax(0, 1fr));

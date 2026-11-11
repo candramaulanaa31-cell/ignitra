@@ -2,19 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-
-const PAGES = [
-  ["/docs", "Overview"],
-  ["/docs/triggers", "Triggers"],
-  ["/docs/conditions", "Conditions"],
-  ["/docs/actions", "Actions"],
-  ["/docs/variables", "Variables"],
-  ["/docs/webhooks", "Webhooks"],
-  ["/docs/integrations", "Integrations"],
-  ["/docs/onchain", "Onchain"],
-  ["/docs/api", "API"],
-  ["/docs/sdk", "SDK"],
-] as const;
+import { DOC_PAGES as PAGES } from "@/lib/site";
 
 export function DocsNav() {
   const path = usePathname();

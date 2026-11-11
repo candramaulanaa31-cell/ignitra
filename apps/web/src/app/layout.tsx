@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Archivo, JetBrains_Mono } from "next/font/google";
 import type { ReactNode } from "react";
 import { ServiceWorker } from "@/components/service-worker";
+import { SITE_URL } from "@/lib/site";
 import "./globals.css";
 
 // Self-hosted at build time (no request to Google at runtime). Archivo's width axis gives the
@@ -17,6 +18,11 @@ export const metadata: Metadata = {
   // iOS: installable to the home screen; Web Push works there (iOS 16.4+) once installed.
   appleWebApp: { capable: true, title: "IGNITRA", statusBarStyle: "black-translucent" },
   icons: { icon: "/icons/icon-192.png", apple: "/icons/apple-touch-icon.png" },
+  // Absolute URLs for share cards. Each page's title and description become its og:/twitter: tags;
+  // the image is app/opengraph-image.tsx unless a page has its own (templates do).
+  metadataBase: new URL(SITE_URL),
+  openGraph: { type: "website", siteName: "IGNITRA", locale: "en_US" },
+  twitter: { card: "summary_large_image" },
 };
 
 export const viewport: Viewport = {
