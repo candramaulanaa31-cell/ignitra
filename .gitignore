@@ -5,6 +5,8 @@ coverage/
 *.tsbuildinfo
 .env
 .env.*
+# Any real env file, wherever it lands (e.g. a copy of the server's ignitra.env): never committed.
+*.env
 !.env.example
 .data/
 next-env.d.ts
