@@ -269,7 +269,7 @@ fi
 
 say "done"
 if [ "$TUNNEL" = 1 ]; then
-  echo "  1. In Cloudflare, the tunnel's public hostname $API_DOMAIN must point to http://localhost:4000."
+  echo "  1. In Cloudflare, the tunnel's public hostname $API_DOMAIN must point to http://127.0.0.1:4000."
 else
   echo "  1. DNS: an A record for $API_DOMAIN pointing to this server."
 fi

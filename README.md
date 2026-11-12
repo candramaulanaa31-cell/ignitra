@@ -700,6 +700,14 @@ The web app runs on Vercel. The API, listener and runner run on one small Linux 
   - It is safe to run again; `DRY_RUN=1` prints the commands instead.
 - `deploy/push.sh user@host`, from your machine, for the first deploy and every update. It ships `git archive HEAD`, installs, migrates, and runs `pnpm ops doctor`. It restarts the services only if the preflight passes.
 
+**On your own Windows PC** (free; the PC must stay on), `deploy/windows/` runs every role in one process on PGlite, behind a Cloudflare Tunnel:
+
+- `node deploy/windows/deploy.mjs --domain example.com`, from the repo, for the first deploy and every update.
+  - It keeps a separate copy at `C:\ignitra-prod` (a git clone, so its `.env` and `.data` stay) and writes the settings on the first run.
+  - It holds the backend, installs, and runs the preflight. If the preflight fails, it puts back the previous version.
+- `install.ps1`, once, as administrator, registers a scheduled task that starts `supervisor.mjs` at boot, and keeps the PC awake while plugged in.
+- `supervisor.mjs` restarts the backend when it stops or its API stops answering. It writes daily logs and takes a verified backup every night.
+
 What the scripts do, by hand:
 
 1. **Postgres.** Create a Neon project and use its direct (unpooled) connection string as `DATABASE_URL`. Each service keeps at most 10 connections.

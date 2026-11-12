@@ -54,9 +54,9 @@ function sink() {
   }
   return logStream;
 }
-/** Same shape as the backend's pino lines (30 info, 40 warn, 50 error). */
+/** Same shape as the backend's log lines (level 30 info, 40 warn, 50 error). */
 function log(msg, level = 30) {
-  sink().write(`${JSON.stringify({ level, time: Date.now(), pid: process.pid, name: "supervisor", msg })}\n`);
+  sink().write(`${JSON.stringify({ level, time: new Date().toISOString(), service: "supervisor", pid: process.pid, msg })}\n`);
   if (process.stdout.isTTY) console.log(`${new Date().toTimeString().slice(0, 8)} ${msg}`);
 }
 function prune(dir) {

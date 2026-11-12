@@ -1,17 +1,18 @@
 # Launch checklist
 
-Everything IGNITRA needs to go live, in order. The web app runs on Vercel. The API, the listener and the runner run on one Linux server. Steps marked **(you)** need your accounts; the rest are commands.
+Everything IGNITRA needs to go live, in order. The web app runs on Vercel. The API, the listener and the runner run on one machine: a Linux server, or your own Windows PC. Steps marked **(you)** need your accounts; the rest are commands.
 
 The host names below are `<domain>` for the web app and `api.<domain>` for the API.
 
-There are two ways to run the server:
+There are three ways to run the backend:
 
-- **A. Free (default):** an Oracle Cloud Always Free ARM VM, with Postgres on the same VM. Cloudflare Tunnel brings traffic in, so the server opens no ports and needs no certificate. The domain's DNS must be on Cloudflare.
+- **A. Free server:** an Oracle Cloud Always Free ARM VM, with Postgres on the same VM. Cloudflare Tunnel brings traffic in, so the server opens no ports and needs no certificate. The domain's DNS must be on Cloudflare.
 - **B. Any VPS:** Hetzner, DigitalOcean, Vultr and others. Caddy serves HTTPS on ports 80/443, and Postgres runs on the VPS or on Neon.
+- **C. Your own Windows PC:** free, with every role in one process on an embedded database (PGlite), and Cloudflare Tunnel bringing traffic in. The PC must stay on and online. While it is off, nothing runs: inbound webhooks fail, and chain alerts arrive late, once it is back. Good to start with; move to A or B when people depend on it (`pnpm ops db export` / `import` carries the data over).
 
 ## 1. Accounts (you)
 
-- [ ] **Domain**, with its nameservers moved to Cloudflare (required for A, optional for B).
+- [ ] **Domain**, with its nameservers moved to Cloudflare (required for A and C, optional for B).
 - [ ] **SSH key** on your machine. In Git Bash, run `ssh-keygen -t ed25519` and press Enter at each prompt. The public key is `~/.ssh/id_ed25519.pub`.
 - [ ] **A: Oracle Cloud.**
   - [ ] Sign up for the free tier. The home region is permanent; pick one near your users (for example Singapore). A card is checked, and you are not charged.
@@ -25,17 +26,60 @@ There are two ways to run the server:
   - [ ] Staying on the free tier is fine.
     - Oracle may stop an instance it considers idle. Start it again in the console: every service, the tunnel and Postgres come back on their own.
     - Upgrading to Pay As You Go prevents that, and usage within the free limits stays free. But the card can then be charged for anything beyond those limits.
-- [ ] **A: Cloudflare Tunnel.**
+- [ ] **A and C: Cloudflare Tunnel.**
   - [ ] In Zero Trust → Networks → Tunnels, create a tunnel (type Cloudflared), named for example `ignitra-api`.
-  - [ ] Copy the install command it shows (`… service install eyJ…`). Keep it private: anyone with the token can run the tunnel.
-  - [ ] Add a public hostname: `api.<domain>` → service `HTTP`, URL `localhost:4000`. Cloudflare creates the DNS record itself.
+  - [ ] Pick the system it runs on (A: Debian, arm64; C: Windows, 64-bit), and copy the install command it shows (`… service install eyJ…`). Keep it private: anyone with the token can run the tunnel.
+  - [ ] Add a public hostname (also called a published application route): `api.<domain>` → service `HTTP`, URL `127.0.0.1:4000` (A) or `127.0.0.1:4100` (C). Cloudflare creates the DNS record itself.
   - [ ] Do **not** add an `A` record for `api`.
 - [ ] **B: VPS.** Ubuntu 24.04 (or 22.04, or Debian 12), 1 vCPU and 1–2 GB RAM. Log in as root or as a user with passwordless sudo.
 - [ ] **B: DNS.** An `A` record for `api.<domain>` pointing to the VPS IP (DNS only if it is on Cloudflare).
 - [ ] **B: Postgres, if not on the VPS.** A Neon project in a region near the VPS. Use the **direct** connection string, not the pooled one. Each service keeps at most 10 connections.
 - [ ] **Vercel.** An account that can import the GitHub repo.
 
-## 2. Prepare the server (once)
+## C. Your Windows PC (instead of steps 2–4)
+
+From the repo, in a normal terminal (Git Bash or PowerShell):
+
+```sh
+node deploy/windows/deploy.mjs --domain <domain>
+```
+
+This:
+
+- creates `C:\ignitra-prod`, a separate copy of the repo at its last commit, so work in your own copy never touches the running one;
+- writes `C:\ignitra-prod\.env` with fresh secrets: the API on `127.0.0.1:4100`, every role in one process, and the database in `C:\ignitra-prod\.data`;
+- installs the dependencies and runs the preflight.
+
+- [ ] **Copy `ENCRYPTION_KEY` from `C:\ignitra-prod\.env` somewhere safe and offline** (a password manager).
+
+Then once, in **PowerShell as administrator** (Win+X → Terminal (Admin)):
+
+```powershell
+cloudflared.exe service install <token>      # the command from the tunnel page
+powershell -ExecutionPolicy Bypass -File C:\ignitra-prod\deploy\windows\install.ps1
+```
+
+`install.ps1` does two things:
+
+- It registers the scheduled task `IGNITRA`. The task starts the supervisor at boot, before anyone signs in, and checks every minute that it is running.
+- It keeps the PC awake while it is plugged in: no sleep, and closing the lid does nothing.
+
+The supervisor (`deploy/windows/supervisor.mjs`) keeps the backend running:
+
+- It restarts the backend when it stops, or when its API stops answering.
+- It writes logs to `.data\logs`.
+- Every night, it takes a verified backup into `.data\backups` and keeps 14 days.
+
+- **Every update:** `node deploy/windows/deploy.mjs` from the repo. It holds the backend, installs, and runs the preflight. It starts the backend again only if the preflight passes; otherwise it puts back the previous version.
+- **Health:** `curl http://127.0.0.1:4100/health`.
+- **Logs:** the newest file in `C:\ignitra-prod\.data\logs`.
+- **Settings:** edit `C:\ignitra-prod\.env` (the table in step 3 lists every variable), then deploy again.
+- Restarts for Windows Update come back on their own. A PC that is off or asleep runs nothing.
+- Copy `.data\backups` off the PC too (for example, into a cloud drive folder).
+
+Then continue with step 5.
+
+## 2. Prepare the server (A and B, once)
 
 From the repo on your machine (Git Bash on Windows):
 
@@ -67,7 +111,7 @@ It works on x86-64 and ARM64 and is safe to run again: existing settings, secret
 
 - [ ] **Copy `ENCRYPTION_KEY` somewhere safe and offline** (a password manager): `sudo grep ENCRYPTION_KEY= /etc/ignitra/ignitra.env`. Without it, stored secrets (bot tokens, API keys) cannot be decrypted, even from a backup.
 
-## 3. Settings: `/etc/ignitra/ignitra.env`
+## 3. Settings: `/etc/ignitra/ignitra.env` (C: `C:\ignitra-prod\.env`)
 
 With `DOMAIN`, the file is already complete for launch. Edit it with `sudo nano /etc/ignitra/ignitra.env`, one `KEY=value` per line; quote values that contain spaces. Without `DOMAIN` (or for Neon), fill it from this table. Generate secrets on your machine with `pnpm gen:secret` (one per secret), and the Web Push pair with `pnpm gen:vapid`.
 
@@ -96,7 +140,7 @@ With `DOMAIN`, the file is already complete for launch. Edit it with `sudo nano 
 
 The rest of `.env.example` has working defaults. Telegram needs nothing here: users connect their own bots in the app. After editing, run `deploy/push.sh` again, or `sudo systemctl restart ignitra-api ignitra-listener ignitra-runner`.
 
-## 4. Deploy the code (first time, and every update)
+## 4. Deploy the code (A and B: first time, and every update)
 
 From the repo on your machine:
 
@@ -124,13 +168,14 @@ It ships the committed code, installs dependencies, migrates the database and ru
 
 - [ ] `curl https://api.<domain>/health` answers `"status":"ok"` and shows a chain head.
 - [ ] On the server, `systemctl status ignitra-api ignitra-listener ignitra-runner` shows all three active (A: also `cloudflared`). Logs: `journalctl -u ignitra-listener -f`.
+- [ ] C: in PowerShell, `Get-ScheduledTask IGNITRA` shows `Running` and `Get-Service cloudflared` shows `Running`.
 - [ ] Open `https://<domain>`. The block height ticks in the header. Sign in with a wallet, start from a template and press **Test**: the run shows up, marked TEST.
 - [ ] Share `https://<domain>` in a chat (Telegram, X). The card shows "When the chain moves, everything follows." Template links show their own card.
 - [ ] `https://<domain>/robots.txt` and `/sitemap.xml` use the real domain.
 
 ## 7. After launch (you, with Claude)
 
-- [ ] **Backups.** `deploy/backup.sh` runs nightly into `/var/backups/ignitra`. Copy that directory off the machine too (rclone, restic). This matters most when Postgres runs on the same server. The file holds account data with secrets still encrypted; keep `ENCRYPTION_KEY` elsewhere.
+- [ ] **Backups.** `deploy/backup.sh` runs nightly into `/var/backups/ignitra` (C: the supervisor, into `C:\ignitra-prod\.data\backups`). Copy that directory off the machine too (rclone, restic, a cloud drive folder). This matters most when the database runs on the same machine. The file holds account data with secrets still encrypted; keep `ENCRYPTION_KEY` elsewhere.
 - [ ] **Monitoring.** An uptime check on `https://api.<domain>/health`. The metrics are at `127.0.0.1:4001/metrics` on the server.
 - [ ] **RPC.** Add a second provider as `RPC_URL_FALLBACK`, or make a paid endpoint primary.
 - [ ] **Live checks that were waiting for a public URL:**
