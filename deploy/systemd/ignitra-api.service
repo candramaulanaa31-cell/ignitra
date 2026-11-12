@@ -1,7 +1,8 @@
 # IGNITRA HTTP API. Copy to /etc/systemd/system/, then: systemctl enable --now ignitra-api
 [Unit]
 Description=IGNITRA API
-After=network-online.target
+# With Postgres on this machine: start after it, stop before it (ignored when it is not installed).
+After=network-online.target postgresql.service
 Wants=network-online.target
 
 [Service]

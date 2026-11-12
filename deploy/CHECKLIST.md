@@ -22,7 +22,9 @@ There are two ways to run the server:
     - SSH key: paste the `.pub` file.
     - Note its public IP. The user is `ubuntu`.
   - [ ] If the console says "Out of capacity", try another availability domain, or try again later.
-  - [ ] Optional: upgrade the account to Pay As You Go. Usage within the free limits stays free, and idle free instances are no longer reclaimed.
+  - [ ] Staying on the free tier is fine.
+    - Oracle may stop an instance it considers idle. Start it again in the console: every service, the tunnel and Postgres come back on their own.
+    - Upgrading to Pay As You Go prevents that, and usage within the free limits stays free. But the card can then be charged for anything beyond those limits.
 - [ ] **A: Cloudflare Tunnel.**
   - [ ] In Zero Trust → Networks → Tunnels, create a tunnel (type Cloudflared), named for example `ignitra-api`.
   - [ ] Copy the install command it shows (`… service install eyJ…`). Keep it private: anyone with the token can run the tunnel.
