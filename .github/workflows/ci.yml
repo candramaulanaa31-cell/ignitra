@@ -39,7 +39,24 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Typecheck and test
-        run: pnpm check
+        shell: bash
+        run: |
+          set -o pipefail
+          pnpm check 2>&1 | tee check.log
+
+      # Reading job logs needs a GitHub login; annotations are public (the checks API). When the
+      # step above fails without a test annotation (a crashed worker, say), this one shows why.
+      - name: Report what failed
+        if: failure()
+        shell: bash
+        run: |
+          [ -f check.log ] || exit 0
+          lines=$(sed -r 's/\x1b\[[0-9;]*[A-Za-z]//g' check.log \
+            | grep -E -i -B2 -A8 'FAIL|✗|×|error|unhandled|timed? ?out|exited|ELIFECYCLE' | tail -n 80 | cut -c1-200)
+          lines=${lines//'%'/'%25'}
+          lines=${lines//$'\r'/}
+          lines=${lines//$'\n'/'%0A'}
+          echo "::error title=pnpm check failed (node ${{ matrix.node }})::${lines}"
 
       - name: Build the web app
         run: pnpm build

@@ -83,8 +83,11 @@ function isAlive(pid: number): boolean {
   }
 }
 
-/** PGlite has no multi-process safety; two writers corrupt the data dir. Guard it. */
-function acquireLock(dataDir: string): () => void {
+/**
+ * PGlite has no multi-process safety; two writers corrupt the data dir. Guard it.
+ * Returns the release function. Exported for tests; createDb takes the lock itself.
+ */
+export function acquireLock(dataDir: string): () => void {
   mkdirSync(dataDir, { recursive: true });
   const lockFile = join(dataDir, "ignitra.lock");
   for (let attempt = 0; attempt < 2; attempt++) {
