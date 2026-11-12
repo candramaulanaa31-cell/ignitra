@@ -160,10 +160,25 @@ It ships the committed code, installs dependencies, migrates the database and ru
 - [ ] Add these environment variables for Production:
   - `API_URL=https://api.<domain>`. It is read at build time, so redeploy after changing it.
   - `WEB_URL=https://<domain>`. It makes share cards, the sitemap and template links absolute.
+  - `ENABLE_EXPERIMENTAL_COREPACK=1`. Vercel then installs with the pnpm version in `packageManager` (12), not its own default.
 - [ ] Add the domain `<domain>` (and `www.<domain>` if you want it to redirect).
   - In Cloudflare DNS, create the records Vercel shows.
   - Set them to **DNS only** (grey cloud), so Vercel can issue the certificate.
 - [ ] Vercel's Hobby plan is for non-commercial use. Move to Pro before charging money.
+
+The same with the Vercel CLI, once logged in (`vercel login`), from the repo:
+
+```sh
+vercel project create ignitra
+vercel project update ignitra --root-directory apps/web --framework nextjs --node-version 24.x --yes
+vercel env add API_URL production,preview --value https://api.<domain> --project ignitra --no-sensitive --yes
+vercel env add WEB_URL production --value https://<domain> --project ignitra --no-sensitive --yes
+vercel env add ENABLE_EXPERIMENTAL_COREPACK production,preview --value 1 --project ignitra --no-sensitive --yes
+vercel git connect --project ignitra --yes    # needs the Vercel GitHub app on the repo
+vercel domains add <domain> ignitra           # prints the DNS records to create
+```
+
+After `git connect`, every push to `main` deploys.
 
 ## 6. Verify
 
