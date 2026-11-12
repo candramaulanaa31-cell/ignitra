@@ -689,12 +689,16 @@ Still open: Web Push on a phone; real Resend and Google accounts; a run from an 
 
 ## Deploying
 
-The low-cost layout from the plan: the web app on Vercel, one small VPS for the API, listener and runner, and Postgres on Neon (or Supabase). The files are in `deploy/`. They have not been run on a VPS yet. The multi-process setup itself was rehearsed on real Postgres (below).
+The web app runs on Vercel. The API, listener and runner run on one small Linux server. The default is free: an Oracle Cloud Always Free ARM VM with Postgres on the same VM, reached through a Cloudflare Tunnel, so the server opens no ports. Any VPS with Caddy, and Postgres on Neon (or Supabase), works too. The files are in `deploy/`. They have not been run on a real server yet. The multi-process setup itself was rehearsed on real Postgres (below).
 
-**`deploy/CHECKLIST.md` is the step-by-step launch list**: accounts, DNS, every variable and where it comes from, Vercel settings, and checks. Two scripts do the server work:
+**`deploy/CHECKLIST.md` is the step-by-step launch list**: accounts, the tunnel or DNS, every variable and where it comes from, Vercel settings, and checks. Two scripts do the server work:
 
-- `deploy/bootstrap.sh`, once, as root on a fresh Ubuntu or Debian VPS: `API_DOMAIN=api.example.com bash bootstrap.sh`. It installs Node.js 24 (LTS), pnpm, Caddy and rsync, creates the `ignitra` user and directories, and sets up the firewall (SSH, 80, 443), Caddy, the systemd units and the nightly backup. It is safe to run again; `DRY_RUN=1` prints the commands instead.
-- `deploy/push.sh root@host`, from your machine, for the first deploy and every update. It ships `git archive HEAD`, installs, migrates, and runs `pnpm ops doctor`. It restarts the services only if the preflight passes.
+- `deploy/bootstrap.sh`, once, as root on a fresh Ubuntu or Debian server (x86-64 or ARM64): `DOMAIN=example.com TUNNEL=1 WITH_POSTGRES=1 bash bootstrap.sh`, or `DOMAIN=example.com bash bootstrap.sh` for Caddy.
+  - It installs Node.js 24 (LTS), pnpm and rsync, then cloudflared or Caddy. With `WITH_POSTGRES=1`, it also installs PostgreSQL 17 on localhost.
+  - It creates the `ignitra` user and its directories, the firewall rules, the systemd units and the nightly backup.
+  - With `DOMAIN`, it writes a complete settings file with fresh secrets. The web app is at `https://DOMAIN` and the API at `https://api.DOMAIN`.
+  - It is safe to run again; `DRY_RUN=1` prints the commands instead.
+- `deploy/push.sh user@host`, from your machine, for the first deploy and every update. It ships `git archive HEAD`, installs, migrates, and runs `pnpm ops doctor`. It restarts the services only if the preflight passes.
 
 What the scripts do, by hand:
 
@@ -706,14 +710,14 @@ What the scripts do, by hand:
    API_PORT=4000
    API_PUBLIC_URL=https://api.example.com
    TRUST_PROXY=127.0.0.1
-   WEB_URL=https://app.example.com
-   CORS_ORIGINS=https://app.example.com
-   GOOGLE_REDIRECT_URI=https://app.example.com/api/v1/connections/google/callback
+   WEB_URL=https://example.com
+   CORS_ORIGINS=https://example.com
+   GOOGLE_REDIRECT_URI=https://example.com/api/v1/connections/google/callback
    ```
 
 4. **Schema and preflight.** `pnpm db:migrate`, then `pnpm ops doctor` until nothing fails.
 5. **Services.** Copy `deploy/systemd/*.service` to `/etc/systemd/system/`, then `systemctl enable --now ignitra-api ignitra-listener ignitra-runner`. Put Caddy in front of the API (`deploy/Caddyfile`); it handles the certificate. Open only SSH, 80 and 443 in the firewall: the services listen on 127.0.0.1.
-6. **Web app on Vercel.** Set the root directory to `apps/web` and include files outside it (the workspace packages). Set `API_URL=https://api.example.com` (read at build time, so redeploy after changing it) and `WEB_URL=https://app.example.com` (it makes share cards, the sitemap and template links absolute).
+6. **Web app on Vercel.** Set the root directory to `apps/web` and include files outside it (the workspace packages). Set `API_URL=https://api.example.com` (read at build time, so redeploy after changing it) and `WEB_URL=https://example.com` (it makes share cards, the sitemap and template links absolute).
 7. **Backups and monitoring.** Run `deploy/backup.sh` from cron: nightly, verified, kept 14 days. Add an uptime check on `https://api.example.com/health`, and scrape `127.0.0.1:4001/metrics` on the box with the alerts above.
 
 To update, run `deploy/push.sh` again. By hand, that is `pnpm install --frozen-lockfile && pnpm db:migrate && pnpm ops doctor`, then a restart of the three services. The listener resumes from its cursors, and runs in flight are reclaimed when their lease expires.
