@@ -27,9 +27,10 @@ There are three ways to run the backend:
     - Oracle may stop an instance it considers idle. Start it again in the console: every service, the tunnel and Postgres come back on their own.
     - Upgrading to Pay As You Go prevents that, and usage within the free limits stays free. But the card can then be charged for anything beyond those limits.
 - [ ] **A and C: Cloudflare Tunnel.**
-  - [ ] In Zero Trust → Networks → Tunnels, create a tunnel (type Cloudflared), named for example `ignitra-api`.
+  - [ ] In the main Cloudflare dashboard, go to **Networking → Tunnels** and create a tunnel, named for example `ignitra-api`. Zero Trust → Networks has tunnels too, but its onboarding asks for a payment method, even for the free plan.
   - [ ] Pick the system it runs on (A: Debian, arm64; C: Windows, 64-bit), and copy the install command it shows (`… service install eyJ…`). Keep it private: anyone with the token can run the tunnel.
-  - [ ] Add a public hostname (also called a published application route): `api.<domain>` → service `HTTP`, URL `127.0.0.1:4000` (A) or `127.0.0.1:4100` (C). Cloudflare creates the DNS record itself.
+  - [ ] Run that command on the machine: A, during step 2 (bootstrap.sh asks for it); C, in step C. Once the tunnel shows as connected, continue.
+  - [ ] On the tunnel's **Routes** tab, add a route → **Published application**: `api.<domain>` → `http://127.0.0.1:4000` (A) or `http://127.0.0.1:4100` (C). Cloudflare creates the DNS record itself.
   - [ ] Do **not** add an `A` record for `api`.
 - [ ] **B: VPS.** Ubuntu 24.04 (or 22.04, or Debian 12), 1 vCPU and 1–2 GB RAM. Log in as root or as a user with passwordless sudo.
 - [ ] **B: DNS.** An `A` record for `api.<domain>` pointing to the VPS IP (DNS only if it is on Cloudflare).
