@@ -43,6 +43,15 @@ export async function runService(
 
   process.once("SIGINT", () => void shutdown("SIGINT", 0));
   process.once("SIGTERM", () => void shutdown("SIGTERM", 0));
+  // On Windows a signal to a child process is a hard kill, so a supervisor that spawned this process
+  // with an IPC channel (deploy/windows/supervisor.mjs) sends "shutdown" instead. If the supervisor
+  // itself dies, stop too: an orphan would keep the database lock and the port from its successor.
+  if (process.send) {
+    process.on("message", (msg) => {
+      if (msg === "shutdown") void shutdown("shutdown message", 0);
+    });
+    process.once("disconnect", () => void shutdown("supervisor gone", 0));
+  }
   process.on("unhandledRejection", (err) => {
     logger.fatal({ err }, "unhandled promise rejection");
     void shutdown("unhandledRejection", 1);

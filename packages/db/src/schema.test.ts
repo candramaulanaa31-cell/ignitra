@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { eq } from "drizzle-orm";
@@ -185,6 +185,23 @@ describe("PGlite on disk", () => {
       await first.close();
       const second = await createDb(url);
       await second.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("treats a lock from before the last boot as stale, even when its pid is alive", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ignitra-pglite-"));
+    const lock = join(dir, "ignitra.lock");
+    try {
+      // After a reboot the old pid can belong to a live, unrelated process (Windows reuses pids).
+      writeFileSync(lock, String(process.pid));
+      utimesSync(lock, new Date(0), new Date(0));
+      const db = await createDb(`pglite://${dir}`);
+      await db.close();
+      // A fresh lock with a live pid still refuses.
+      writeFileSync(lock, String(process.pid));
+      await expect(createDb(`pglite://${dir}`)).rejects.toBeInstanceOf(DatabaseLockedError);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

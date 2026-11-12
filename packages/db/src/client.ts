@@ -1,4 +1,5 @@
-import { closeSync, mkdirSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
+import { uptime } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
@@ -94,10 +95,21 @@ function acquireLock(dataDir: string): () => void {
       return () => rmSync(lockFile, { force: true });
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-      const pid = Number.parseInt(readFileSync(lockFile, "utf8"), 10);
+      let pid: number;
+      let writtenAt: number;
+      try {
+        pid = Number.parseInt(readFileSync(lockFile, "utf8"), 10);
+        writtenAt = statSync(lockFile).mtimeMs;
+      } catch {
+        continue; // released meanwhile: try again
+      }
+      // A lock written before this machine last booted is stale even when its pid is alive: Windows
+      // reuses pids quickly, so after a reboot the pid can belong to an unrelated process. The margin
+      // covers the clock being corrected just after boot.
+      const beforeBoot = writtenAt < Date.now() - uptime() * 1000 - 10 * 60_000;
       // Our own pid counts as alive: two handles in one process corrupt the dir too.
-      if (Number.isInteger(pid) && isAlive(pid)) throw new DatabaseLockedError(dataDir, pid);
-      rmSync(lockFile, { force: true }); // stale lock from a crashed process
+      if (!beforeBoot && Number.isInteger(pid) && isAlive(pid)) throw new DatabaseLockedError(dataDir, pid);
+      rmSync(lockFile, { force: true }); // stale lock from a crashed process or an earlier boot
     }
   }
   throw new Error(`could not acquire PGlite lock at ${lockFile}`);
