@@ -13,7 +13,7 @@ import { SparkObject } from "@/components/spark-object";
 import { LABELS, label } from "@/lib/format";
 import { serverGet } from "@/lib/server-api";
 import { CopyButton } from "@/components/ui";
-import { SOURCE_URL, TOKEN, X_HANDLE, X_URL } from "@/lib/site";
+import { SOURCE_URL, TOKEN, TOKEN_LAUNCH, X_HANDLE, X_URL } from "@/lib/site";
 
 // Regenerated at most every 5 s however many people visit (the live demo then polls on the client).
 export const revalidate = 5;
@@ -352,6 +352,7 @@ export default async function Home() {
           <a href={X_URL} target="_blank" rel="noreferrer">
             X · @{X_HANDLE}
           </a>
+          {TOKEN || TOKEN_LAUNCH ? <Link href="/token">$IGNITRA</Link> : null}
           {TOKEN?.tradeUrl ? (
             <a href={TOKEN.tradeUrl} target="_blank" rel="noreferrer">
               Trade ${TOKEN.symbol}

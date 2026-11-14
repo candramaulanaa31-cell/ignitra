@@ -1,7 +1,7 @@
 import type { MetadataRoute } from "next";
 import { OFFICIAL_TEMPLATES } from "@ignitra/core";
 import { serverGetCached } from "@/lib/server-api";
-import { DOC_PAGES, SITE_URL } from "@/lib/site";
+import { DOC_PAGES, SITE_URL, TOKEN, TOKEN_LAUNCH } from "@/lib/site";
 
 // Rebuilt hourly so public community templates join the official ones.
 export const revalidate = 3600;
@@ -24,5 +24,6 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     ...OFFICIAL_TEMPLATES.map((t) => page(`/templates/${t.slug}`, 0.7, "monthly")),
     ...community.filter((slug) => !official.has(slug)).map((slug) => page(`/templates/${slug}`, 0.5, "monthly")),
     ...DOC_PAGES.map(([href]) => page(href, href === "/docs" ? 0.8 : 0.6, "monthly")),
+    ...(TOKEN || TOKEN_LAUNCH ? [page("/token", 0.6, "weekly")] : []),
   ];
 }

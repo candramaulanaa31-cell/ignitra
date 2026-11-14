@@ -1,5 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { tokenFromEnv } from "./site";
+import { launchNoteFromEnv, shortAddress, tokenFromEnv } from "./site";
+
+describe("the launch note", () => {
+  it("takes short plain text and nothing else", () => {
+    expect(launchNoteFromEnv("Monday, Nov 16")).toBe("Monday, Nov 16");
+    expect(launchNoteFromEnv("  Mon 16/11 20:00  ")).toBe("Mon 16/11 20:00");
+    expect(launchNoteFromEnv(undefined)).toBeNull();
+    expect(launchNoteFromEnv("")).toBeNull();
+    expect(launchNoteFromEnv("<script>alert(1)</script>")).toBeNull();
+    expect(launchNoteFromEnv("x".repeat(41))).toBeNull();
+  });
+
+  it("shortens an address to its ends", () => {
+    expect(shortAddress("0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168")).toBe("0x5fc5…d168");
+  });
+});
 
 describe("the community token setting", () => {
   it("is off until a valid address is set", () => {

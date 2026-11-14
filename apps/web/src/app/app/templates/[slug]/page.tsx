@@ -14,6 +14,16 @@ import type { TemplatePlaceholder } from "@ignitra/core";
 
 const RANK = { free: 0, builder: 1, team: 2 } as const;
 
+/**
+ * A link can fill in a template's fields (?token=0x…), as the token page does. Connections stay the
+ * user's own choice, and the form is still reviewed and validated before anything is created.
+ */
+function fromQuery(p: TemplatePlaceholder, query: Record<string, string | string[] | undefined>): string | null {
+  if (p.type === "connection") return null;
+  const value = query[p.key];
+  return typeof value === "string" && value.length > 0 && value.length <= 200 ? value.trim() : null;
+}
+
 function AddressInput({ value, onChange, invalid }: { value: string; onChange: (v: string) => void; invalid: boolean }) {
   const info = useAddressInfo(value);
   return (
@@ -91,8 +101,9 @@ function PlaceholderField({ p, value, set, connections, errors, reload }: { p: T
   );
 }
 
-export default function UseTemplatePage({ params }: { params: Promise<{ slug: string }> }) {
+export default function UseTemplatePage({ params, searchParams }: { params: Promise<{ slug: string }>; searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const { slug } = use(params);
+  const query = use(searchParams);
   const router = useRouter();
   const { me } = useSession();
   const t = useApi<{ data: TemplateDetail }>(`/v1/templates/${slug}`);
@@ -105,7 +116,7 @@ export default function UseTemplatePage({ params }: { params: Promise<{ slug: st
   if (t.error) return <Notice kind="error">{t.error.message}</Notice>;
   if (!t.data) return <Spinner />;
   const tpl = t.data.data;
-  const current = values ?? Object.fromEntries(tpl.placeholders.map((p) => [p.key, p.default === undefined ? "" : String(p.default)]));
+  const current = values ?? Object.fromEntries(tpl.placeholders.map((p) => [p.key, fromQuery(p, query) ?? (p.default === undefined ? "" : String(p.default))]));
   const locked = RANK[tpl.min_plan] > RANK[me.plan];
   const issues = error instanceof ApiError ? error.issues : [];
   const fieldErrors = (key: string) => issues.filter((i) => i.path === `values.${key}`).map((i) => i.message.replace(/^[^:]+: /, ""));

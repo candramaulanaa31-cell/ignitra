@@ -45,6 +45,20 @@ export function tokenFromEnv(address: string | undefined, tradeUrl: string | und
  */
 export const TOKEN = tokenFromEnv(process.env.TOKEN_ADDRESS, process.env.TOKEN_TRADE_URL);
 
+/** When the token launches, the way people should read it ("Monday, Nov 16"); plain text only. */
+export function launchNoteFromEnv(value: string | undefined): string | null {
+  const note = value?.trim() ?? "";
+  return note.length > 0 && note.length <= 40 && /^[\w ,.:/-]+$/.test(note) ? note : null;
+}
+
+/**
+ * Before the token exists (TOKEN_LAUNCH set, TOKEN_ADDRESS not yet): the announcement bar and /token
+ * say when it launches and that anything with its name before then is not ours.
+ */
+export const TOKEN_LAUNCH = launchNoteFromEnv(process.env.TOKEN_LAUNCH);
+
+export const shortAddress = (address: string) => `${address.slice(0, 6)}…${address.slice(-4)}`;
+
 /** The docs pages, in reading order: the docs navigation and the sitemap. */
 export const DOC_PAGES = [
   ["/docs", "Overview"],

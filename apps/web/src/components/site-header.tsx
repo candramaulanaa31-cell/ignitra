@@ -3,10 +3,13 @@ import { Brand } from "./brand";
 import { ChainHead } from "./chain-head";
 import { SignalPath } from "./signal";
 import { X_HANDLE, X_URL } from "@/lib/site";
+import { Announcement } from "./announce";
 
 /** Header of the public pages (landing, templates, docs). */
 export function SiteHeader({ active }: { active?: "templates" | "docs" }) {
   return (
+    <>
+    <Announcement />
     <header className="topbar">
       <Brand />
       <nav className="nav" aria-label="Site">
@@ -32,6 +35,7 @@ export function SiteHeader({ active }: { active?: "templates" | "docs" }) {
         </Link>
       </div>
     </header>
+    </>
   );
 }
 
