@@ -17,7 +17,14 @@ export const metadata: Metadata = {
   manifest: "/manifest.webmanifest",
   // iOS: installable to the home screen; Web Push works there (iOS 16.4+) once installed.
   appleWebApp: { capable: true, title: "IGNITRA", statusBarStyle: "black-translucent" },
-  icons: { icon: "/icons/icon-192.png", apple: "/icons/apple-touch-icon.png" },
+  icons: {
+    icon: [
+      { url: "/icons/icon.svg", type: "image/svg+xml" },
+      { url: "/icons/favicon-32.png", sizes: "32x32", type: "image/png" },
+      { url: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
+    ],
+    apple: "/icons/apple-touch-icon.png",
+  },
   // Absolute URLs for share cards. Each page's title and description become its og:/twitter: tags;
   // the image is app/opengraph-image.tsx unless a page has its own (templates do).
   metadataBase: new URL(SITE_URL),
