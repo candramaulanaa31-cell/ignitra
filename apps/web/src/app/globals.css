@@ -958,6 +958,28 @@ input[type="checkbox"] {
   border-radius: 7px;
 }
 
+/* The header's way in: X next to the app, closer together than the header's other items. */
+.topbar-actions {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.btn.x-link {
+  padding: 3px 9px;
+  color: var(--muted);
+}
+
+.btn.x-link:hover {
+  color: var(--text);
+}
+
+.btn.x-link svg {
+  width: 13px;
+  height: 13px;
+}
+
 .btn.lg {
   min-height: 46px;
   padding: 10px 20px;
