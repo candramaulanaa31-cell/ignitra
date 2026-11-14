@@ -12,7 +12,8 @@ import { Lift, Slab } from "@/components/solid";
 import { SparkObject } from "@/components/spark-object";
 import { LABELS, label } from "@/lib/format";
 import { serverGet } from "@/lib/server-api";
-import { SOURCE_URL } from "@/lib/site";
+import { CopyButton } from "@/components/ui";
+import { SOURCE_URL, TOKEN, X_HANDLE, X_URL } from "@/lib/site";
 
 // Regenerated at most every 5 s however many people visit (the live demo then polls on the client).
 export const revalidate = 5;
@@ -313,6 +314,14 @@ export default async function Home() {
         <div className="footer-brand">
           <Brand />
           <p className="muted">Onchain automation for Robinhood Chain. No bot to run; every run explains itself.</p>
+          {TOKEN ? (
+            <div className="footer-token">
+              <span className="footer-token-label">${TOKEN.symbol} · community token</span>
+              <code>{TOKEN.address}</code>
+              <CopyButton value={TOKEN.address} text="Copy address" />
+              <p className="faint">The only official address. It gives no ownership, revenue or other rights, and nobody promises its price.</p>
+            </div>
+          ) : null}
         </div>
         <nav aria-label="Product">
           <h4>Product</h4>
@@ -337,6 +346,22 @@ export default async function Home() {
           </a>
           <a href="#status">System status</a>
           <Link href="/docs/onchain">Onchain actions</Link>
+        </nav>
+        <nav aria-label="Community">
+          <h4>Community</h4>
+          <a href={X_URL} target="_blank" rel="noreferrer">
+            X · @{X_HANDLE}
+          </a>
+          {TOKEN?.tradeUrl ? (
+            <a href={TOKEN.tradeUrl} target="_blank" rel="noreferrer">
+              Trade ${TOKEN.symbol}
+            </a>
+          ) : null}
+          {TOKEN ? (
+            <a href={TOKEN.explorerUrl} target="_blank" rel="noreferrer">
+              ${TOKEN.symbol} on the explorer
+            </a>
+          ) : null}
         </nav>
       </footer>
     </div>
