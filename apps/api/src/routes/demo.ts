@@ -31,7 +31,9 @@ export function registerDemoRoutes(app: FastifyInstance, ctx: ApiContext): void 
       .select()
       .from(runs)
       .where(and(eq(runs.flowId, id), eq(runs.isTest, false)))
-      .orderBy(desc(runs.createdAt))
+      // Runs queued in the same instant (several matches in one block; PGlite's clock ticks in
+      // milliseconds) share created_at. Their ids are time-ordered, so they settle the order.
+      .orderBy(desc(runs.createdAt), desc(runs.id))
       .limit(100);
     const latency = (r: (typeof recent)[number]): number | null => {
       const ts = r.triggerEvent.block_timestamp;
